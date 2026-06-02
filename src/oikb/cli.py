@@ -718,7 +718,7 @@ def status(url: str | None, token: str | None, kb: str | None):
 
     try:
         info = client.get_kb(kb)
-        files = info.get("files", [])
+        files = info.get("files") or []
     except Exception as e:
         click.echo(click.style(f"Failed: {e}", fg="red"), err=True)
         sys.exit(1)
