@@ -151,6 +151,7 @@ services:
 ```bash
 oikb sync github:owner/repo --kb-id your-kb-id
 GITEA_URL=https://gitea.example.com oikb sync gitea:owner/repo --kb-id your-kb-id
+GITEA_URL=https://gitea.example.com oikb sync 'gitea:owner/*' --kb-id your-kb-id
 oikb sync confluence:ENG --kb-id your-kb-id
 oikb sync s3://bucket/prefix --kb-id your-kb-id
 oikb sync servicenow:incident --kb-id your-kb-id

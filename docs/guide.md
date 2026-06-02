@@ -247,6 +247,12 @@ Gitea requires `GITEA_URL` because instances are self-hosted. Set `GITEA_TOKEN` 
 oikb sync gitea:owner/repo --branch main --path docs/
 ```
 
+To sync every repository owned by a Gitea user or organization, use `*` as the repository name. Files are stored under a repository-name prefix to prevent collisions:
+
+```bash
+oikb sync gitea:owner/* --kb-id your-kb-id
+```
+
 Or in `.oikb.yaml`:
 
 ```yaml
@@ -256,6 +262,10 @@ sources:
     kb-id: abc123
     branch: main
     path: docs/
+
+  - name: all-gitea-repos
+    source: gitea:myorg/*
+    kb-id: abc123
 ```
 
 ### GitLab / Bitbucket
