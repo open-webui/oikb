@@ -1,3 +1,3 @@
 """oikb — Open WebUI Knowledge Base CLI."""
 
-__version__ = "0.3.5"
+__version__ = "0.3.7"

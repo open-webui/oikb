@@ -18,6 +18,7 @@ A complete guide to syncing content into Open WebUI Knowledge Bases.
 - [Sources](#sources)
   - [Local Directories](#local-directories)
   - [GitHub](#github)
+  - [Gitea](#gitea)
   - [GitLab / Bitbucket](#gitlab--bitbucket)
   - [Confluence](#confluence)
   - [Cloud Storage (S3 / GCS / Azure)](#cloud-storage-s3--gcs--azure)
@@ -232,6 +233,31 @@ sources:
     path: docs/
 ```
 
+### Gitea
+
+```bash
+export GITEA_URL=https://gitea.example.com
+export GITEA_TOKEN=your-token  # required for private repos
+oikb sync gitea:owner/repo --kb-id your-kb-id
+```
+
+Gitea requires `GITEA_URL` because instances are self-hosted. Set `GITEA_TOKEN` for private repositories or higher API limits. Like GitHub, Gitea syncs the default branch by default and supports branch and subdirectory selection:
+
+```bash
+oikb sync gitea:owner/repo --branch main --path docs/
+```
+
+Or in `.oikb.yaml`:
+
+```yaml
+sources:
+  - name: gitea-docs
+    source: gitea:myorg/docs
+    kb-id: abc123
+    branch: main
+    path: docs/
+```
+
 ### GitLab / Bitbucket
 
 ```bash
@@ -316,11 +342,11 @@ sources:
 
 ### All Connectors
 
-44 connectors available. See the full list:
+45 connectors available. See the full list:
 
 | Category | Sources |
 |---|---|
-| **Git** | GitHub, GitLab, Bitbucket |
+| **Git** | GitHub, Gitea, GitLab, Bitbucket |
 | **Cloud Storage** | S3, GCS, Azure Blob, Dropbox, R2, Google Drive, SharePoint, Egnyte, Oracle Cloud |
 | **Wikis & KBs** | Confluence, Notion, BookStack, Discourse, GitBook, Guru, Outline, Slab, Document360, DokuWiki, Google Sites |
 | **Ticketing** | Jira, Linear, Zendesk, Freshdesk, Asana, ClickUp, Airtable, ServiceNow, ProductBoard |
