@@ -10,6 +10,7 @@ A complete guide to syncing content into Open WebUI Knowledge Bases.
 - [Getting Started](#getting-started)
   - [Your First Sync](#your-first-sync)
   - [Watch Mode](#watch-mode)
+  - [Network Mounts (SMB / CIFS / NFS)](#network-mounts-smb--cifs--nfs)
 - [Configuration File](#configuration-file)
   - [Generating with oikb init](#generating-with-oikb-init)
   - [Manual Setup](#manual-setup)
@@ -115,6 +116,36 @@ oikb watch ./docs --kb-id your-kb-id
 ```
 
 Uses filesystem events (not polling) so changes are picked up instantly.
+
+### Network Mounts (SMB / CIFS / NFS)
+
+Native filesystem events (FSEvents on macOS, inotify on Linux) do **not** work on network-mounted volumes — the OS kernel doesn't receive change notifications from a remote server. This means `oikb watch` without `--polling` will silently miss all changes on SMB/CIFS/NFS shares.
+
+Use `--polling` to switch to a polling-based observer that detects changes by periodically calling `stat()` on every file:
+
+```bash
+# Watch an SMB-mounted directory
+oikb watch /mnt/smb_share/docs --kb-id your-kb-id --polling
+
+# Faster detection (check every 2 seconds instead of default 5)
+oikb watch /mnt/smb_share/docs --kb-id your-kb-id --polling --polling-interval 2
+
+# Custom debounce (wait 5s of quiet time before triggering sync)
+oikb watch /mnt/smb_share/docs --kb-id your-kb-id --polling --debounce 5
+```
+
+#### Watch Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--polling` | off | Use PollingObserver instead of native filesystem events |
+| `--polling-interval` | `5.0` | Seconds between filesystem polls (only used with `--polling`) |
+| `--debounce` | `1.0` / `3.0` | Quiet period before triggering sync. Defaults to 3s with `--polling`, 1s with native events. Override explicitly if needed. |
+| `--verbose` / `-v` | off | Show detailed sync progress |
+
+> **Performance note:** Lower `--polling-interval` detects changes faster but increases I/O on the network share. Each poll `stat()`s every file in the watched directory tree. For large directories (>10k files) over SMB, consider using `--polling-interval 10` or higher.
+
+> **Alternative:** If real-time detection isn't required, use `oikb daemon` with a scheduled interval instead (e.g. `interval: 5m`). The daemon uses time-based scheduling, not filesystem events, so it works on any filesystem.
 
 ---
 
@@ -696,6 +727,9 @@ oikb sync --max-file-size 50mb      Skip large files
 oikb sync --concurrency 4           Parallel uploads
 oikb sync --scan-secrets            Block files with credentials
 oikb watch <dir> --kb-id ID         Auto-sync on file change
+oikb watch <dir> --kb-id ID --polling  Watch with polling (SMB/CIFS/NFS)
+oikb watch <dir> --polling --polling-interval 2  Faster poll frequency
+oikb watch <dir> --polling --debounce 5  Custom debounce
 oikb daemon                         Start scheduled daemon
 oikb daemon --log-format json       JSON logging
 oikb daemon --config /path/to/yaml  Custom config path
@@ -751,3 +785,19 @@ oikb validate --deep # Verify API + KB connectivity
 
 Open WebUI → Knowledge → click a KB → the ID is in the URL:
 `http://localhost:3000/knowledge/8f3a2b1c-1234-5678-9abc-def012345678`
+
+### Watch mode doesn't detect changes on SMB/CIFS/NFS
+
+By default, `oikb watch` uses native filesystem events which don't work on network-mounted volumes. Add `--polling`:
+
+```bash
+oikb watch /mnt/smb_share --kb-id your-kb-id --polling
+```
+
+If changes are still missed, try lowering the polling interval:
+
+```bash
+oikb watch /mnt/smb_share --kb-id your-kb-id --polling --polling-interval 2
+```
+
+See [Network Mounts](#network-mounts-smb--cifs--nfs) for full details.

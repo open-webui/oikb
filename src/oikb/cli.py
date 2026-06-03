@@ -561,8 +561,21 @@ def diff(
 @cli.command()
 @click.argument("directory")
 @common_options
-@click.option("--debounce", default=1.0, type=float, help="Seconds to wait after last change (default: 1.0).")
+@click.option("--debounce", default=None, type=float, help="Seconds to wait after last change (default: 1.0, or 3.0 with --polling).")
 @click.option("-v", "--verbose", is_flag=True, help="Show detailed progress.")
+@click.option(
+    "--polling",
+    is_flag=True,
+    default=False,
+    help="Use PollingObserver instead of native filesystem events. "
+         "Required for SMB/CIFS/NFS network-mounted volumes.",
+)
+@click.option(
+    "--polling-interval",
+    default=5.0,
+    type=float,
+    help="How often (seconds) to poll for changes when --polling is used (default: 5.0).",
+)
 @click.pass_context
 def watch(
     ctx: click.Context,
@@ -570,16 +583,26 @@ def watch(
     url: str | None,
     token: str | None,
     kb: str | None,
-    debounce: float,
+    debounce: float | None,
     verbose: bool,
+    polling: bool,
+    polling_interval: float,
 ):
     """Watch a local directory and sync on changes.
 
     Runs continuously until interrupted (Ctrl+C).
+
+    For SMB/CIFS/NFS mounted volumes, use --polling to enable
+    PollingObserver which detects changes via periodic stat() calls
+    instead of relying on kernel filesystem events.
     """
     if not kb:
         click.echo(click.style("--kb-id is required.", fg="red"), err=True)
         sys.exit(1)
+
+    # Default debounce: 3s for polling (SMB writes arrive in bursts), 1s for native.
+    if debounce is None:
+        debounce = 3.0 if polling else 1.0
 
     quiet = ctx.obj.get("quiet", False)
 
@@ -593,7 +616,10 @@ def watch(
         click.echo(click.style(str(e), fg="red"), err=True)
         sys.exit(1)
 
-    click.echo(f"Watching {directory} → KB {kb} (Ctrl+C to stop)")
+    mode = "polling" if polling else "native"
+    click.echo(f"Watching {directory} → KB {kb} (mode: {mode}, Ctrl+C to stop)")
+    if polling:
+        click.echo(f"  Polling interval: {polling_interval}s, debounce: {debounce}s")
 
     def on_change():
         try:
@@ -616,6 +642,8 @@ def watch(
             on_change=on_change,
             debounce_seconds=debounce,
             ignore=DEFAULT_IGNORE,
+            polling=polling,
+            polling_interval=polling_interval,
         )
     except FileNotFoundError as e:
         click.echo(click.style(f"Error: {e}", fg="red"), err=True)
