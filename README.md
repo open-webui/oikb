@@ -1,6 +1,6 @@
 # 📚 oikb
 
-Keep your [Open WebUI](https://github.com/open-webui/open-webui) Knowledge Bases in sync. Point it at a local directory, a GitHub repo, a Confluence space, an S3 bucket, or any of 44 supported sources. Only new and modified files are uploaded via incremental SHA-256 diffing.
+Keep your [Open WebUI](https://github.com/open-webui/open-webui) Knowledge Bases in sync. Point it at a local directory, a GitHub repo, a Confluence space, an S3 bucket, or any of 45 supported sources. Only new and modified files are uploaded via incremental SHA-256 diffing.
 
 > [!IMPORTANT]
 > Requires **Open WebUI 0.9.6+**
@@ -134,12 +134,12 @@ services:
       timeout: 5s
 ```
 
-## 44 Connectors
+## 45 Connectors
 
 | Category | Sources |
 |---|---|
 | **Code Repos** | GitHub, GitLab, Bitbucket |
-| **Cloud Storage** | S3, GCS, Azure Blob, Dropbox, R2, Google Drive, SharePoint, Egnyte, Oracle Cloud |
+| **Cloud Storage** | S3, GCS, Azure Blob, Dropbox, R2, Google Drive, SharePoint, Nextcloud, Egnyte, Oracle Cloud |
 | **Wikis & KBs** | Confluence, Notion, BookStack, Discourse, GitBook, Guru, Outline, Slab, Document360, DokuWiki, Google Sites |
 | **Ticketing** | Jira, Linear, Zendesk, Freshdesk, Asana, ClickUp, Airtable, ServiceNow, ProductBoard |
 | **Messaging** | Slack, Discord, Microsoft Teams, Gmail, Zulip |
@@ -152,6 +152,7 @@ services:
 oikb sync github:owner/repo --kb-id your-kb-id
 oikb sync confluence:ENG --kb-id your-kb-id
 oikb sync s3://bucket/prefix --kb-id your-kb-id
+oikb sync nextcloud:/Documents --kb-id your-kb-id
 oikb sync servicenow:incident --kb-id your-kb-id
 ```
 

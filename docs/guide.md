@@ -22,6 +22,7 @@ A complete guide to syncing content into Open WebUI Knowledge Bases.
   - [Confluence](#confluence)
   - [Cloud Storage (S3 / GCS / Azure)](#cloud-storage-s3--gcs--azure)
   - [SharePoint](#sharepoint)
+  - [Nextcloud](#nextcloud)
   - [All Connectors](#all-connectors)
 - [Filtering](#filtering)
   - [Include / Exclude Globs](#include--exclude-globs)
@@ -314,14 +315,41 @@ sources:
     interval: 1h
 ```
 
+### Nextcloud
+
+Sync a Nextcloud folder via WebDAV:
+
+```bash
+export NEXTCLOUD_URL=https://nextcloud.example.com
+export NEXTCLOUD_USER=svc_docs
+export NEXTCLOUD_PASSWORD=your-app-password
+
+oikb sync "nextcloud:/Documents" --kb-id your-kb-id
+oikb sync "nextcloud:/Team/Engineering Handbook" --kb-id your-kb-id
+```
+
+Use a Nextcloud app password when possible. The connector resolves the
+authenticated DAV user ID through the Nextcloud OCS user endpoint, so it works
+with both local users and LDAP-backed accounts.
+
+#### .oikb.yaml example
+
+```yaml
+sources:
+  - name: team-docs
+    source: "nextcloud:/Documents"
+    kb-id: abc123
+    interval: 1h
+```
+
 ### All Connectors
 
-44 connectors available. See the full list:
+45 connectors available. See the full list:
 
 | Category | Sources |
 |---|---|
 | **Git** | GitHub, GitLab, Bitbucket |
-| **Cloud Storage** | S3, GCS, Azure Blob, Dropbox, R2, Google Drive, SharePoint, Egnyte, Oracle Cloud |
+| **Cloud Storage** | S3, GCS, Azure Blob, Dropbox, R2, Google Drive, SharePoint, Nextcloud, Egnyte, Oracle Cloud |
 | **Wikis & KBs** | Confluence, Notion, BookStack, Discourse, GitBook, Guru, Outline, Slab, Document360, DokuWiki, Google Sites |
 | **Ticketing** | Jira, Linear, Zendesk, Freshdesk, Asana, ClickUp, Airtable, ServiceNow, ProductBoard |
 | **Messaging** | Slack, Discord, Microsoft Teams, Gmail, Zulip |

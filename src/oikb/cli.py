@@ -112,6 +112,11 @@ def _resolve_connector(source: str, branch: str | None = None, path: str | None 
         parsed = parse_sharepoint_source(source)
         return SharePointConnector(site=parsed["site"], library=parsed.get("library", "Documents"))
 
+    if source.startswith("nextcloud:"):
+        from oikb.connectors.nextcloud import NextcloudConnector, parse_nextcloud_source
+        parsed = parse_nextcloud_source(source)
+        return NextcloudConnector(root=parsed["root"])
+
     if source.startswith("web:"):
         from oikb.connectors.web import WebConnector, parse_web_source
         parsed = parse_web_source(source)
