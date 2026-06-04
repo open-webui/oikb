@@ -48,7 +48,8 @@ class _WebDAVClient:
 
     def walk(self, root: str) -> list[ManifestEntry]:
         entries: list[ManifestEntry] = []
-        self._walk_folder(_normalize_path(root), _normalize_path(root), entries)
+        normalized_root = _normalize_path(root)
+        self._walk_folder(normalized_root, normalized_root, entries, set())
         entries.sort(key=lambda e: e.display_path)
         return entries
 
@@ -62,12 +63,18 @@ class _WebDAVClient:
         root: str,
         folder_path: str,
         entries: list[ManifestEntry],
+        seen_dirs: set[str],
     ) -> None:
+        folder_path = _normalize_path(folder_path)
+        if folder_path in seen_dirs:
+            return
+        seen_dirs.add(folder_path)
+
         for entry in self._propfind(folder_path):
             if entry.path == folder_path:
                 continue
             if entry.is_collection:
-                self._walk_folder(root, entry.path, entries)
+                self._walk_folder(root, entry.path, entries, seen_dirs)
                 continue
 
             relative_path = _relative_to_root(root, entry.path)
