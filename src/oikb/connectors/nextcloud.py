@@ -41,59 +41,36 @@ class _DavEntry:
     is_collection: bool
 
 
-class NextcloudConnector(BaseConnector):
-    """Sync files from a Nextcloud folder via WebDAV.
+class _WebDAVClient:
+    def __init__(self, root_url: str, http: httpx.Client):
+        self.root_url = root_url.rstrip("/")
+        self._http = http
 
-    Args:
-        root:     Folder path inside the authenticated Nextcloud user's files.
-        base_url: Nextcloud base URL, or NEXTCLOUD_URL env var.
-        user:     Nextcloud username, or NEXTCLOUD_USER env var.
-        password: Nextcloud password/app password, or NEXTCLOUD_PASSWORD env var.
-    """
-
-    def __init__(
-        self,
-        root: str,
-        base_url: str | None = None,
-        user: str | None = None,
-        password: str | None = None,
-    ):
-        self.root = _normalize_path(root)
-        self._base_url = (base_url or os.environ.get("NEXTCLOUD_URL", "")).rstrip("/")
-        self._user = user or os.environ.get("NEXTCLOUD_USER", "")
-        self._password = password or os.environ.get("NEXTCLOUD_PASSWORD", "")
-        self._dav_user_id: str | None = None
-
-        if not self._base_url:
-            raise ValueError("Nextcloud URL required. Set NEXTCLOUD_URL env var.")
-        if not self._user or not self._password:
-            raise ValueError(
-                "Nextcloud credentials required. Set NEXTCLOUD_USER and "
-                "NEXTCLOUD_PASSWORD env vars."
-            )
-
-        self._http = httpx.Client(
-            auth=(self._user, self._password),
-            timeout=60.0,
-            headers={"User-Agent": "oikb/nextcloud"},
-        )
-
-    def build_manifest(self) -> list[ManifestEntry]:
-        """Recursively scan the configured Nextcloud root."""
+    def walk(self, root: str) -> list[ManifestEntry]:
         entries: list[ManifestEntry] = []
-        self._walk_folder(self.root, entries)
+        self._walk_folder(_normalize_path(root), _normalize_path(root), entries)
         entries.sort(key=lambda e: e.display_path)
         return entries
 
-    def _walk_folder(self, folder_path: str, entries: list[ManifestEntry]) -> None:
+    def read_file(self, root: str, path: str, filename: str) -> bytes:
+        file_path = _join_paths(root, path, filename)
+        resp = self._request("GET", self._url(file_path), ok_statuses={200})
+        return resp.content
+
+    def _walk_folder(
+        self,
+        root: str,
+        folder_path: str,
+        entries: list[ManifestEntry],
+    ) -> None:
         for entry in self._propfind(folder_path):
             if entry.path == folder_path:
                 continue
             if entry.is_collection:
-                self._walk_folder(entry.path, entries)
+                self._walk_folder(root, entry.path, entries)
                 continue
 
-            relative_path = self._relative_to_root(entry.path)
+            relative_path = _relative_to_root(root, entry.path)
             if relative_path is None:
                 continue
 
@@ -107,19 +84,10 @@ class NextcloudConnector(BaseConnector):
                 )
             )
 
-    def read_file(self, path: str, filename: str) -> bytes:
-        """Download a file from Nextcloud."""
-        file_path = _join_paths(self.root, path, filename)
-        resp = self._request("GET", self._dav_url(file_path), ok_statuses={200})
-        return resp.content
-
-    def close(self) -> None:
-        self._http.close()
-
     def _propfind(self, path: str) -> list[_DavEntry]:
         resp = self._request(
             "PROPFIND",
-            self._dav_url(path),
+            self._url(path),
             ok_statuses={200, 207},
             data=PROPFIND_BODY,
             headers={"Depth": "1", "Content-Type": "application/xml"},
@@ -130,7 +98,7 @@ class NextcloudConnector(BaseConnector):
         try:
             root = ElementTree.fromstring(xml_text)
         except ElementTree.ParseError as exc:
-            raise ValueError("Invalid Nextcloud WebDAV XML response") from exc
+            raise ValueError("Invalid WebDAV XML response") from exc
 
         entries: list[_DavEntry] = []
         for response in root.findall("d:response", DAV_NS):
@@ -171,37 +139,96 @@ class NextcloudConnector(BaseConnector):
         return entries
 
     def _href_to_path(self, href: str) -> str | None:
-        dav_root = urlsplit(self._dav_url("/")).path.rstrip("/")
+        dav_root = urlsplit(self._url("/")).path.rstrip("/")
         raw_path = urlsplit(href).path
         if not raw_path.startswith(dav_root):
             return None
         suffix = unquote(raw_path[len(dav_root) :]) or "/"
         return _normalize_path(suffix)
 
-    def _relative_to_root(self, path: str) -> str | None:
-        normalized_path = _normalize_path(path)
-        if self.root == "/":
-            return normalized_path.strip("/")
-        if normalized_path == self.root:
-            return ""
-        prefix = f"{self.root}/"
-        if not normalized_path.startswith(prefix):
-            return None
-        return normalized_path[len(prefix) :]
-
-    def _dav_url(self, path: str) -> str:
+    def _url(self, path: str) -> str:
         segments = [
             quote(segment, safe="")
             for segment in _normalize_path(path).strip("/").split("/")
             if segment
         ]
-        base = (
+        if not segments:
+            return self.root_url
+        return f"{self.root_url}/{'/'.join(segments)}"
+
+    def _request(self, method: str, url: str, *, ok_statuses: set[int], **kwargs):
+        resp = self._http.request(method, url, **kwargs)
+        if resp.status_code not in ok_statuses:
+            raise httpx.HTTPStatusError(
+                f"{method} {url} failed: HTTP {resp.status_code}",
+                request=resp.request,
+                response=resp,
+            )
+        return resp
+
+
+class NextcloudConnector(BaseConnector):
+    """Sync files from a Nextcloud folder via WebDAV.
+
+    Args:
+        root:     Folder path inside the authenticated Nextcloud user's files.
+        base_url: Nextcloud base URL, or NEXTCLOUD_URL env var.
+        user:     Nextcloud username, or NEXTCLOUD_USER env var.
+        password: Nextcloud password/app password, or NEXTCLOUD_PASSWORD env var.
+    """
+
+    def __init__(
+        self,
+        root: str,
+        base_url: str | None = None,
+        user: str | None = None,
+        password: str | None = None,
+    ):
+        self.root = _normalize_path(root)
+        self._base_url = (base_url or os.environ.get("NEXTCLOUD_URL", "")).rstrip("/")
+        self._user = user or os.environ.get("NEXTCLOUD_USER", "")
+        self._password = password or os.environ.get("NEXTCLOUD_PASSWORD", "")
+        self._dav_user_id: str | None = None
+        self._webdav: _WebDAVClient | None = None
+
+        if not self._base_url:
+            raise ValueError("Nextcloud URL required. Set NEXTCLOUD_URL env var.")
+        if not self._user or not self._password:
+            raise ValueError(
+                "Nextcloud credentials required. Set NEXTCLOUD_USER and "
+                "NEXTCLOUD_PASSWORD env vars."
+            )
+
+        self._http = httpx.Client(
+            auth=(self._user, self._password),
+            timeout=60.0,
+            headers={"User-Agent": "oikb/nextcloud"},
+        )
+
+    def build_manifest(self) -> list[ManifestEntry]:
+        """Recursively scan the configured Nextcloud root."""
+        return self._get_webdav().walk(self.root)
+
+    def read_file(self, path: str, filename: str) -> bytes:
+        """Download a file from Nextcloud."""
+        return self._get_webdav().read_file(self.root, path, filename)
+
+    def close(self) -> None:
+        self._http.close()
+
+    def _get_webdav(self) -> _WebDAVClient:
+        if self._webdav is None:
+            self._webdav = _WebDAVClient(
+                root_url=self._dav_root_url(),
+                http=self._http,
+            )
+        return self._webdav
+
+    def _dav_root_url(self) -> str:
+        return (
             f"{self._base_url}/remote.php/dav/files/"
             f"{quote(self._resolve_dav_user_id(), safe='')}"
         )
-        if not segments:
-            return base
-        return f"{base}/{'/'.join(segments)}"
 
     def _resolve_dav_user_id(self) -> str:
         if self._dav_user_id:
@@ -260,6 +287,19 @@ def _split_relative_file(relative_path: str) -> tuple[str, str]:
 def _join_paths(*parts: str) -> str:
     joined = "/".join(part.strip("/") for part in parts if part and part.strip("/"))
     return _normalize_path(joined)
+
+
+def _relative_to_root(root: str, path: str) -> str | None:
+    normalized_root = _normalize_path(root)
+    normalized_path = _normalize_path(path)
+    if normalized_root == "/":
+        return normalized_path.strip("/")
+    if normalized_path == normalized_root:
+        return ""
+    prefix = f"{normalized_root}/"
+    if not normalized_path.startswith(prefix):
+        return None
+    return normalized_path[len(prefix) :]
 
 
 def _empty_to_none(value: str | None) -> str | None:
