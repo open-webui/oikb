@@ -7,7 +7,7 @@ Uses the GitLab Repository Tree API — no local clone needed.
 from __future__ import annotations
 
 import os
-from typing import Any
+import urllib.parse
 
 import httpx
 
@@ -18,8 +18,8 @@ class GitLabConnector(BaseConnector):
     """Sync files from a GitLab repository.
 
     Args:
-        owner:    Project namespace (e.g. "open-webui").
-        repo:     Project name (e.g. "docs").
+        owner:    Project namespace (e.g. "open-webui") OR full unresolved path.
+        repo:     Project name (e.g. "docs"). If None, owner is treated as a full path to resolve.
         branch:   Branch to sync from (default: project default branch).
         path:     Subdirectory to scope to (e.g. "docs/").
         token:    GitLab personal access token (or GITLAB_TOKEN env var).
@@ -29,7 +29,7 @@ class GitLabConnector(BaseConnector):
     def __init__(
         self,
         owner: str,
-        repo: str,
+        repo: str | None = None,
         branch: str | None = None,
         path: str | None = None,
         token: str | None = None,
@@ -40,7 +40,9 @@ class GitLabConnector(BaseConnector):
         self.branch = branch
         self.path = path.strip("/") if path else None
         self._token = token or os.environ.get("GITLAB_TOKEN")
-        self._base_url = (base_url or os.environ.get("GITLAB_URL", "https://gitlab.com")).rstrip("/")
+        self._base_url = (
+            base_url or os.environ.get("GITLAB_URL", "https://gitlab.com")
+        ).rstrip("/")
 
         headers: dict[str, str] = {}
         if self._token:
@@ -52,14 +54,63 @@ class GitLabConnector(BaseConnector):
             timeout=60.0,
         )
 
-        # URL-encode the project path for GitLab's API.
-        self._project_id = f"{self.owner}%2F{self.repo}"
+        self._project_id: str | None = None
+
+        # If repo is explicitly provided, we don't need dynamic resolution.
+        if self.repo:
+            self._project_id = f"{urllib.parse.quote(self.owner, safe='')}%2F{urllib.parse.quote(self.repo, safe='')}"
+
+    def _ensure_resolved(self) -> None:
+        """Lazily resolve the project path if it wasn't provided explicitly."""
+        if self._project_id is not None:
+            return
+
+        full_path = self.owner.strip("/")
+        segments = full_path.split("/")
+
+        if len(segments) < 2:
+            self._project_id = urllib.parse.quote(full_path, safe="")
+            return
+
+        # Try segment prefixes to find the actual project ID via API
+        for i in range(2, len(segments) + 1):
+            project_candidate = "/".join(segments[:i])
+            encoded_candidate = urllib.parse.quote(project_candidate, safe="")
+
+            resp = self._http.get(f"/projects/{encoded_candidate}")
+
+            if resp.status_code == 200:
+                self.owner = "/".join(segments[: i - 1])
+                self.repo = segments[i - 1]
+                self._project_id = encoded_candidate
+
+                # If there are remaining segments, they belong to the file path
+                remaining = segments[i:]
+                if remaining:
+                    resolved_path = "/".join(remaining)
+                    # Merge with explicitly passed path if both exist
+                    self.path = (
+                        f"{resolved_path}/{self.path}" if self.path else resolved_path
+                    )
+                return
+            elif resp.status_code != 404:
+                # If it's a 401, 403, or 500, we should fail loudly, not silently skip.
+                resp.raise_for_status()
+
+        # Fallback if API lookup fails to find a match (e.g. 404s all the way down)
+        parts = full_path.split("/", 2)
+        self.owner = parts[0]
+        self.repo = parts[1] if len(parts) > 1 else ""
+        self._project_id = f"{urllib.parse.quote(self.owner, safe='')}%2F{urllib.parse.quote(self.repo, safe='')}"
+        if len(parts) > 2 and not self.path:
+            self.path = parts[2]
 
     def build_manifest(self) -> list[ManifestEntry]:
         """Fetch the repo tree and build a manifest.
 
         Uses the recursive tree API. Blob IDs are content-addressable hashes.
         """
+        self._ensure_resolved()
         ref = self.branch or self._get_default_branch()
         entries: list[ManifestEntry] = []
 
@@ -116,7 +167,7 @@ class GitLabConnector(BaseConnector):
 
     def read_file(self, path: str, filename: str) -> bytes:
         """Download a file's raw content via the GitLab Repository Files API."""
-        import urllib.parse
+        self._ensure_resolved()
 
         file_path = f"{path}/{filename}" if path else filename
         if self.path:
@@ -134,6 +185,7 @@ class GitLabConnector(BaseConnector):
 
     def _get_default_branch(self) -> str:
         """Fetch the project's default branch name."""
+        self._ensure_resolved()
         resp = self._http.get(f"/projects/{self._project_id}")
         resp.raise_for_status()
         return resp.json()["default_branch"]
@@ -145,18 +197,20 @@ class GitLabConnector(BaseConnector):
 def parse_gitlab_source(source: str) -> dict[str, str | None]:
     """Parse a gitlab:owner/repo[/path] source string.
 
-    Examples:
-        gitlab:open-webui/docs
-        gitlab:open-webui/docs/api
+    Supports:
+      - Standard format: gitlab:owner/repo/path/to/docs
+      - Explicit project:path format: gitlab:group/subgroup/project:path/to/docs
     """
     source = source.removeprefix("gitlab:")
 
-    parts = source.split("/", 2)
-    if len(parts) < 2:
-        raise ValueError(f"Invalid GitLab source: {source}. Expected: gitlab:owner/repo")
+    # Explicit separator project:path
+    if ":" in source:
+        project, path = source.split(":", 1)
+        parts = project.rsplit("/", 1)
+        if len(parts) == 2:
+            return {"owner": parts[0], "repo": parts[1], "path": path}
+        # Safe fallback if there is no slash in the project name
+        return {"owner": project, "repo": None, "path": path}
 
-    owner = parts[0]
-    repo = parts[1]
-    path = parts[2] if len(parts) > 2 else None
-
-    return {"owner": owner, "repo": repo, "path": path}
+    # Otherwise, return full path as owner and let connector resolve repo/path dynamically
+    return {"owner": source, "repo": None, "path": None}
