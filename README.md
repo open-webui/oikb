@@ -129,9 +129,11 @@ services:
       - open-webui
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/health/ready"]
       interval: 30s
       timeout: 5s
+      retries: 3
+      start_period: 15s
 ```
 
 ## 44 Connectors

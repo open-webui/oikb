@@ -1,24 +1,41 @@
-# ── Build ──
-FROM python:3.12-slim AS builder
+FROM python:3.14-alpine3.23 AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ENV UV_LINK_MODE=copy
 
 WORKDIR /app
-COPY . .
 
-RUN pip install --no-cache-dir uv && \
-    uv build --wheel
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --all-extras --no-install-project --no-dev
 
-# ── Runtime ──
-FROM python:3.12-slim
+COPY pyproject.toml LICENSE README.md ./
+COPY src/ ./src/
 
-LABEL org.opencontainers.image.source="https://github.com/open-webui/oikb"
-LABEL org.opencontainers.image.description="CLI tool for syncing content to Open WebUI Knowledge Bases"
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --all-extras --no-dev
 
-# Install oikb from the built wheel.
-COPY --from=builder /app/dist/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 
-# Sync source is mounted at /data by convention.
-VOLUME ["/data"]
-WORKDIR /data
+FROM python:3.14-alpine3.23
+LABEL org.opencontainers.image.description="CLI tool for syncing content to Open WebUI Knowledge Bases" \
+      org.opencontainers.image.source="https://github.com/open-webui/oikb" \
+      org.opencontainers.image.vendor="Open WebUI Inc." \
+      org.opencontainers.image.licenses="MIT"
+ENV PYTHONUNBUFFERED=1
+
+RUN apk add --no-cache ca-certificates \
+    && addgroup -g 1000 appuser \
+    && adduser -D -u 1000 -G appuser appuser
+
+COPY --from=builder --chown=appuser:appuser /app /app
+
+WORKDIR /app
+
+USER appuser
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+EXPOSE 8080
 
 ENTRYPOINT ["oikb"]
