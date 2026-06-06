@@ -105,4 +105,11 @@ class FilesystemConnector(BaseConnector):
             file_path = self.root / path / filename
         else:
             file_path = self.root / filename
-        return file_path.read_bytes()
+            
+        resolved_path = file_path.resolve()
+        if not resolved_path.is_relative_to(self.root):
+            raise PermissionError(
+                f"Path traversal attempt detected: {filename} resolves outside the root directory."
+            )
+            
+        return resolved_path.read_bytes()
