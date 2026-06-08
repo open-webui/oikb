@@ -99,7 +99,7 @@ docker run -d \
   -e OPEN_WEBUI_API_KEY=sk-... \
   -e OIKB_API_KEY=your-daemon-key \
   -e LOG_FORMAT=json \
-  -v ./.oikb.yaml:/app/.oikb.yaml:ro \
+  -v ./.oikb.yaml:/data/.oikb.yaml:ro \
   -p 8080:8080 \
   ghcr.io/open-webui/oikb:latest daemon
 ```
@@ -121,7 +121,7 @@ services:
       - OIKB_API_KEY=${OIKB_API_KEY}
       - LOG_FORMAT=json
     volumes:
-      - ./.oikb.yaml:/app/.oikb.yaml:ro
+      - ./.oikb.yaml:/data/.oikb.yaml:ro
     command: daemon
     ports:
       - "8080:8080"
