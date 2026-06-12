@@ -50,6 +50,11 @@ def _resolve_connector(source: str, branch: str | None = None, path: str | None 
         parsed = parse_github_source(source)
         return GitHubConnector(owner=parsed["owner"], repo=parsed["repo"], branch=branch, path=path or parsed.get("path"))
 
+    if source.startswith("gitea:"):
+        from oikb.connectors.gitea import GiteaConnector, parse_gitea_source
+        parsed = parse_gitea_source(source)
+        return GiteaConnector(owner=parsed["owner"], repo=parsed["repo"], branch=branch, path=path or parsed.get("path"))
+
     if source.startswith("gitlab:"):
         from oikb.connectors.gitlab import GitLabConnector, parse_gitlab_source
         parsed = parse_gitlab_source(source)
@@ -349,7 +354,7 @@ def _build_cli_filter(max_file_size: str | None):
 @cli.command()
 @click.argument("source", required=False)
 @common_options
-@click.option("--branch", default=None, help="Branch for GitHub sources.")
+@click.option("--branch", default=None, help="Branch for Git repository sources.")
 @click.option("--path", "source_path", default=None, help="Subdirectory within the source.")
 @click.option("--dry-run", is_flag=True, help="Preview changes without uploading.")
 @click.option("-v", "--verbose", is_flag=True, help="Show detailed progress.")
@@ -506,7 +511,7 @@ def sync(
 @cli.command()
 @click.argument("source")
 @common_options
-@click.option("--branch", default=None, help="Branch for GitHub sources.")
+@click.option("--branch", default=None, help="Branch for Git repository sources.")
 @click.option("--path", "source_path", default=None, help="Subdirectory within the source.")
 @click.option("-v", "--verbose", is_flag=True, help="Show detailed output.")
 @click.pass_context
@@ -713,7 +718,7 @@ def status(url: str | None, token: str | None, kb: str | None):
 
     try:
         info = client.get_kb(kb)
-        files = info.get("files", [])
+        files = info.get("files") or []
     except Exception as e:
         click.echo(click.style(f"Failed: {e}", fg="red"), err=True)
         sys.exit(1)

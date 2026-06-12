@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.8] - 2026-06-03
+
+### Added
+
+- **Gitea**: wildcard owner/org source via `gitea:owner/*` to sync every repository under an owner into one Knowledge Base. Files are prefixed by repository name to avoid path collisions.
+
+## [0.3.7] - 2026-06-02
+
+### Added
+
+- **Gitea**: repository source connector via `gitea:owner/repo`, configurable with `GITEA_URL` and optional `GITEA_TOKEN`. Supports branch and subdirectory scoping, uses Gitea Git tree blob SHAs for incremental sync checksums, and syncs files through the raw content API.
+
 ## [0.3.6] - 2026-05-28
 
 ### Added

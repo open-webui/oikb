@@ -135,4 +135,4 @@ class OikbClient:
         resp = self._http.get(f"/knowledge/{kb_id}")
         resp.raise_for_status()
         data = resp.json()
-        return data.get("files", [])
+        return data.get("files") or []
