@@ -273,6 +273,11 @@ def _resolve_connector(source: str, branch: str | None = None, path: str | None 
             limit=int(parsed.get("limit", "1000")),
         )
 
+    if source.startswith("zotero:"):
+        from oikb.connectors.zotero import ZoteroConnector, parse_zotero_source
+        parsed = parse_zotero_source(source)
+        return ZoteroConnector(hierarchy=parsed.get("hierarchy"))
+
     # Default: local filesystem.
     from oikb.connectors.filesystem import FilesystemConnector
     return FilesystemConnector(source)
