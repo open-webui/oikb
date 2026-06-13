@@ -146,6 +146,7 @@ services:
 | **Meetings** | Gong, Fireflies |
 | **Forums** | XenForo |
 | **Sales & CRM** | Salesforce, HubSpot |
+| **Reference Managers** | Zotero |
 | **Web** | Website / Sitemap crawler |
 
 ```bash
@@ -154,9 +155,34 @@ oikb sync confluence:ENG --kb-id your-kb-id
 oikb sync s3://bucket/prefix --kb-id your-kb-id
 oikb sync nextcloud:/Documents --kb-id your-kb-id
 oikb sync servicenow:incident --kb-id your-kb-id
+oikb sync "zotero:Research%%Machine Learning" --kb-id your-kb-id
 ```
 
-Some connectors need an optional extra: `pip install oikb[gdrive]`, `pip install oikb[s3]`, or `pip install oikb[all]` for everything.
+Some connectors need an optional extra: `pip install oikb[gdrive]`, `pip install oikb[s3]`, `pip install oikb[zotero]`, or `pip install oikb[all]` for everything.
+
+### Zotero
+
+Syncs the text of PDF attachments in a Zotero collection to a Knowledge Base. The
+collection hierarchy maps to KB directories, and the connector is read-only with respect
+to Zotero (it never modifies your library). Source syntax uses `%%` as the hierarchy
+separator; an empty hierarchy (`zotero:`) syncs every top-level collection.
+
+```bash
+export ZOTERO_LIBRARY_ID=123456
+export ZOTERO_API_KEY=xxxxxxxx
+oikb sync "zotero:Research%%Machine Learning" --kb-id your-kb-id
+```
+
+| Variable | Description |
+|---|---|
+| `ZOTERO_LIBRARY_ID` | Zotero library id (required) |
+| `ZOTERO_LIBRARY_TYPE` | `user` or `group` (default: `user`) |
+| `ZOTERO_API_KEY` | Zotero API key (required) |
+| `ZOTERO_CHECKSUM` | Change detection: `version` (cheap, default) or `content` (hashes extracted text) |
+| `ZOTERO_EXCLUDE` | `;`-separated collection paths to skip, e.g. `Research%%Archive;Research%%Drafts` |
+
+Text is taken from Zotero's indexed fulltext when available, falling back to extracting it
+from the PDF with PyMuPDF. Requires the extra: `pip install oikb[zotero]`.
 
 ## Filters
 
