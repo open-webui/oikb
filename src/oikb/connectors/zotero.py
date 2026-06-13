@@ -14,8 +14,9 @@ Auth and options via env vars:
   ZOTERO_CHECKSUM      change-detection mode (default: version):
                          'version' — cheap, hashes the Zotero item version (no download)
                          'content' — hashes the extracted text (accurate, downloads all)
-  ZOTERO_EXCLUDE       ';'-separated collection paths to skip,
-                       e.g. "Research%%Archive;Research%%Drafts"
+  ZOTERO_EXCLUDE       ';'-separated collection paths to skip, relative to the synced
+                       root and using %% as separator. When syncing
+                       "zotero:Research", exclude its subcollections as "Archive;Drafts".
 
 Source syntax: zotero:<hierarchy> where hierarchy uses %% as the separator, e.g.
   zotero:Research%%Machine Learning

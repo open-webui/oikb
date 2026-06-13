@@ -179,7 +179,7 @@ oikb sync "zotero:Research%%Machine Learning" --kb-id your-kb-id
 | `ZOTERO_LIBRARY_TYPE` | `user` or `group` (default: `user`) |
 | `ZOTERO_API_KEY` | Zotero API key (required) |
 | `ZOTERO_CHECKSUM` | Change detection: `version` (cheap, default) or `content` (hashes extracted text) |
-| `ZOTERO_EXCLUDE` | `;`-separated collection paths to skip, e.g. `Research%%Archive;Research%%Drafts` |
+| `ZOTERO_EXCLUDE` | `;`-separated subcollection paths to skip, relative to the synced root (e.g. when syncing `zotero:Research`, use `Archive;Drafts`) |
 
 Text is taken from Zotero's indexed fulltext when available, falling back to extracting it
 from the PDF with PyMuPDF. Requires the extra: `pip install oikb[zotero]`.
