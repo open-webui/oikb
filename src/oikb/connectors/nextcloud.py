@@ -70,7 +70,14 @@ class _WebDAVClient:
             return
         seen_dirs.add(folder_path)
 
-        for entry in self._propfind(folder_path):
+        try:
+            children = self._propfind(folder_path)
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                return
+            raise
+
+        for entry in children:
             if entry.path == folder_path:
                 continue
             if entry.is_collection:
