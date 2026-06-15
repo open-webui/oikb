@@ -146,18 +146,28 @@ def _finalize_page_text(
     page_id: str,
     space_key: str,
     base_url: str,
+    path: str = "",
+    filename: str = "",
 ) -> str:
     """Ensure non-empty, unique text for Open WebUI vector deduplication.
 
-    OWUI hashes extracted content and rejects duplicates. Multiple Confluence
-    pages (empty bodies, identical index pages, same content across spaces)
-    would otherwise share the same hash — including e3b0c442… for "".
+    OWUI hashes document chunks and rejects duplicates already in the KB.
+    The unique id must be in the *first* lines so chunking differs for pages
+    that share boilerplate body text.
     """
     body = text.strip() or title.strip() or f"Confluence page {page_id}"
-    source = f"confluence:{space_key}:{page_id}"
+    display = f"{path}/{filename}" if path else (filename or title)
+    uid = f"confluence:{space_key}:{page_id}"
+    if display:
+        uid = f"{uid}:{display}"
+
+    header = f"# {title}\n{uid}\n"
+    source = uid
     if base_url:
-        source = f"{source} {base_url.rstrip('/')}/pages/viewpage.action?pageId={page_id}"
-    return f"{body}\n\n---\n{source}"
+        source = (
+            f"{uid} {base_url.rstrip('/')}/pages/viewpage.action?pageId={page_id}"
+        )
+    return f"{header}\n{body}\n\n---\n{source}"
 
 
 class ConfluenceConnector(BaseConnector):
@@ -369,6 +379,8 @@ class ConfluenceConnector(BaseConnector):
             page_id=page_id,
             space_key=self.space_key,
             base_url=self._base_url,
+            path=path,
+            filename=filename,
         )
         return text.encode("utf-8")
 

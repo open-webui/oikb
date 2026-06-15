@@ -269,6 +269,13 @@ def _resolve_connector(source: str, branch: str | None = None, path: str | None 
         )
 
     # Default: local filesystem.
+    if ":" not in source and source.isascii() and source.isupper() and source.isalnum():
+        raise ValueError(
+            f"Unrecognized source {source!r}. Bare uppercase names map to "
+            f"/data/{source} on the filesystem. For Confluence spaces use "
+            f"confluence:{source}."
+        )
+
     from oikb.connectors.filesystem import FilesystemConnector
     return FilesystemConnector(source)
 
