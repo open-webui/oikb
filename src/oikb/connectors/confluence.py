@@ -27,6 +27,53 @@ BASE_ENDPOINTS = {
 }
 
 
+_INVALID_PATH_CHARS = re.compile(r'[<>:"/\\|?*]')
+
+
+def _sanitize_path_segment(name: str) -> str:
+    """Sanitize a single path segment (ancestor dir or filename stem)."""
+    cleaned = _INVALID_PATH_CHARS.sub("_", name).strip()
+    return cleaned or "_"
+
+
+def _ancestor_dir_path_v1(page: dict[str, Any]) -> str:
+    """Build KB directory path from Confluence v1 ancestors list."""
+    segments = [
+        _sanitize_path_segment(a.get("title", ""))
+        for a in page.get("ancestors") or []
+        if a.get("title")
+    ]
+    return "/".join(segments)
+
+
+def _ancestor_dir_path_v2(
+    page_id: str, pages_by_id: dict[str, dict[str, Any]]
+) -> str:
+    """Build KB directory path by walking Confluence v2 parentId chain."""
+    segments: list[str] = []
+    current = pages_by_id.get(str(page_id))
+    if not current:
+        return ""
+
+    parent_id = current.get("parentId")
+    visited: set[str] = set()
+    while parent_id:
+        pid = str(parent_id)
+        if pid in visited:
+            break
+        visited.add(pid)
+        parent = pages_by_id.get(pid)
+        if not parent:
+            break
+        title = parent.get("title", "")
+        if title:
+            segments.append(_sanitize_path_segment(title))
+        parent_id = parent.get("parentId")
+
+    segments.reverse()
+    return "/".join(segments)
+
+
 def _parse_api_version(api_version: str | None) -> str:
     version = (api_version or os.environ.get("CONFLUENCE_API_VERSION", "v2")).lower()
     if version not in BASE_ENDPOINTS:
@@ -38,14 +85,58 @@ def _parse_api_version(api_version: str | None) -> str:
     return version
 
 
-def _storage_to_text(storage_html: str) -> str:
-    """Convert Confluence storage format (XHTML) to plain text."""
-    # Strip all HTML tags.
+def _storage_to_text(storage_html: str, title: str = "") -> str:
+    """Convert Confluence storage format (XHTML) to plain text.
+
+    Confluence link-only index pages store targets in XML attributes
+    (ri:content-title, href) rather than visible text. Plain tag stripping
+    yields an empty string and Open WebUI rejects the upload with 400.
+    """
+    parts: list[str] = []
+
+    # Page / attachment link targets live in attributes, not element text.
+    for pattern in (
+        r'ri:content-title="([^"]*)"',
+        r'ri:filename="([^"]*)"',
+        r'ri:url="([^"]*)"',
+    ):
+        for match in re.finditer(pattern, storage_html):
+            value = html.unescape(match.group(1)).strip()
+            if value:
+                parts.append(value)
+
+    for match in re.finditer(r'href="([^"#][^"]*)"', storage_html):
+        value = html.unescape(match.group(1)).strip()
+        if value:
+            parts.append(value)
+
+    for match in re.finditer(
+        r"<ac:plain-text-link-body>([^<]*)</ac:plain-text-link-body>",
+        storage_html,
+    ):
+        value = html.unescape(match.group(1)).strip()
+        if value:
+            parts.append(value)
+
+    # Remaining visible text after stripping tags/macros.
     text = re.sub(r"<[^>]+>", " ", storage_html)
     text = html.unescape(text)
-    # Collapse whitespace.
     text = re.sub(r"\s+", " ", text).strip()
-    return text
+    if text:
+        parts.append(text)
+
+    # De-dupe while preserving order.
+    seen: set[str] = set()
+    lines: list[str] = []
+    for part in parts:
+        if part not in seen:
+            seen.add(part)
+            lines.append(part)
+
+    if lines:
+        return "\n".join(lines)
+
+    return title.strip()
 
 
 class ConfluenceConnector(BaseConnector):
@@ -98,8 +189,8 @@ class ConfluenceConnector(BaseConnector):
             follow_redirects=False,
         )
 
-        # Cache page content for read_file.
-        self._page_cache: dict[str, str] = {}
+        # (path, filename) -> Confluence page id
+        self._page_cache: dict[tuple[str, str], str] = {}
 
     def build_manifest(self) -> list[ManifestEntry]:
         """List all pages in the space and build a manifest."""
@@ -109,6 +200,7 @@ class ConfluenceConnector(BaseConnector):
 
     def _build_manifest_v1(self) -> list[ManifestEntry]:
         entries: list[ManifestEntry] = []
+        used_keys: set[tuple[str, str]] = set()
         start = 0
         limit = 250
 
@@ -118,6 +210,7 @@ class ConfluenceConnector(BaseConnector):
                 "type": "page",
                 "limit": limit,
                 "start": start,
+                "expand": "ancestors,version",
             }
 
             resp = self._http.get("/content", params=params)
@@ -129,7 +222,8 @@ class ConfluenceConnector(BaseConnector):
                 break
 
             for page in results:
-                self._add_page_entry(entries, page)
+                dir_path = _ancestor_dir_path_v1(page)
+                self._add_page_entry(entries, page, dir_path, used_keys)
 
             if len(results) < limit:
                 break
@@ -139,7 +233,7 @@ class ConfluenceConnector(BaseConnector):
         return entries
 
     def _build_manifest_v2(self) -> list[ManifestEntry]:
-        entries: list[ManifestEntry] = []
+        all_pages: list[dict[str, Any]] = []
         cursor = None
 
         while True:
@@ -154,54 +248,75 @@ class ConfluenceConnector(BaseConnector):
             resp.raise_for_status()
             data = resp.json()
 
-            for page in data.get("results", []):
-                self._add_page_entry(entries, page)
+            all_pages.extend(data.get("results", []))
 
-            # Handle pagination.
             next_link = data.get("_links", {}).get("next")
             if not next_link:
                 break
-            # Extract cursor from next link.
             cursor_match = re.search(r"cursor=([^&]+)", next_link)
             cursor = cursor_match.group(1) if cursor_match else None
             if not cursor:
                 break
 
+        pages_by_id = {str(page["id"]): page for page in all_pages}
+        entries: list[ManifestEntry] = []
+        used_keys: set[tuple[str, str]] = set()
+        for page in all_pages:
+            dir_path = _ancestor_dir_path_v2(str(page["id"]), pages_by_id)
+            self._add_page_entry(entries, page, dir_path, used_keys)
+
         entries.sort(key=lambda e: e.display_path)
         return entries
 
+    def _unique_path_filename(
+        self,
+        page: dict[str, Any],
+        dir_path: str,
+        used_keys: set[tuple[str, str]],
+    ) -> tuple[str, str]:
+        """Return unique (path, filename) using page id when titles collide."""
+        page_id = str(page["id"])
+        filename = _sanitize_path_segment(page.get("title", "Untitled")) + ".txt"
+        key = (dir_path, filename)
+        if key in used_keys:
+            stem = filename.removesuffix(".txt")
+            filename = f"{stem}_{page_id}.txt"
+            key = (dir_path, filename)
+        used_keys.add(key)
+        return dir_path, filename
+
     def _add_page_entry(
-        self, entries: list[ManifestEntry], page: dict[str, Any]
+        self,
+        entries: list[ManifestEntry],
+        page: dict[str, Any],
+        dir_path: str,
+        used_keys: set[tuple[str, str]],
     ) -> None:
-        page_id = page["id"]
-        title = page["title"]
+        page_id = str(page["id"])
         version = page.get("version", {}).get("number", 0)
 
-        # Use version number as part of checksum.
         checksum = hashlib.sha256(
             f"{page_id}:v{version}".encode()
         ).hexdigest()[:16]
 
-        # Sanitize title for filename.
-        filename = re.sub(r'[<>:"/\\|?*]', "_", title) + ".txt"
+        dir_path, filename = self._unique_path_filename(page, dir_path, used_keys)
 
         entries.append(
             ManifestEntry(
                 filename=filename,
-                path="",
+                path=dir_path,
                 checksum=checksum,
                 size=0,
             )
         )
 
-        # Store page ID for later retrieval.
-        self._page_cache[filename] = page_id
+        self._page_cache[(dir_path, filename)] = page_id
 
     def read_file(self, path: str, filename: str) -> bytes:
         """Fetch a page's content and return as text."""
-        page_id = self._page_cache.get(filename)
+        page_id = self._page_cache.get((path, filename))
         if not page_id:
-            raise FileNotFoundError(f"Page not found: {filename}")
+            raise FileNotFoundError(f"Page not found: {path}/{filename}" if path else filename)
 
         if self._api_version == "v2":
             resp = self._http.get(
@@ -218,7 +333,7 @@ class ConfluenceConnector(BaseConnector):
         data = resp.json()
 
         storage = data.get("body", {}).get("storage", {}).get("value", "")
-        text = _storage_to_text(storage)
+        text = _storage_to_text(storage, title=data.get("title", ""))
         return text.encode("utf-8")
 
     def close(self) -> None:

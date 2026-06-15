@@ -347,7 +347,7 @@ def _run_sync_inner(
                     time.sleep(2 ** attempt)
                     last_err = e
                     continue
-                last_err = e
+                last_err = _http_error_detail(e)
                 break
             except Exception as e:
                 last_err = e
@@ -410,6 +410,20 @@ def _run_sync_inner(
                 _tally(_upload_one(i, entry, change_type, None, None))
 
     return result
+
+
+def _http_error_detail(exc: httpx.HTTPStatusError) -> Exception:
+    """Attach Open WebUI response body to upload errors when available."""
+    detail = exc.response.text.strip()
+    try:
+        payload = exc.response.json()
+        if isinstance(payload, dict) and payload.get("detail"):
+            detail = str(payload["detail"])
+    except Exception:
+        pass
+    if detail:
+        return RuntimeError(f"{exc} — {detail}")
+    return exc
 
 
 def _echo_file_entry(entry: dict, prefix: str, color: str) -> None:
