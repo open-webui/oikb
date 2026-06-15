@@ -397,46 +397,38 @@ def sync(
                 sys.exit(1)
 
         has_errors = False
-        for entry in entries:
-            entry_source = entry.get("source")
-            entry_kb = entry.get("kb-id")
-            entry_branch = entry.get("branch")
-            entry_path = entry.get("path")
-            entry_filter = entry.get("filter", {})
+        from oikb.kb_sync import group_entries_by_kb, run_entries_sync, sources_label
 
-            if not entry_source or not entry_kb:
-                click.echo(click.style(f"Skipping invalid entry (needs source + kb-id): {entry}", fg="yellow"), err=True)
+        for group in group_entries_by_kb(entries):
+            entry_kb = group[0].get("kb-id")
+            label = sources_label(group)
+
+            if not entry_kb or any(not e.get("source") for e in group):
+                click.echo(
+                    click.style(
+                        f"Skipping invalid group (needs source + kb-id): {group}",
+                        fg="yellow",
+                    ),
+                    err=True,
+                )
                 continue
 
             try:
-                connector = _resolve_connector(entry_source, entry_branch, entry_path)
                 client = _make_client(url, token)
 
                 if not quiet:
                     click.echo(f"\n{'─' * 40}")
-                    click.echo(f"Syncing: {entry_source} → {entry_kb}")
+                    click.echo(f"Syncing: {label} → {entry_kb}")
 
-                mf = None
-                inc = entry_filter.get("include")
-                exc = entry_filter.get("exclude")
-                ms = entry_filter.get("max-size") or max_file_size
-                if inc or exc or ms:
-                    from oikb.sync import build_manifest_filter, parse_size
-                    mf = build_manifest_filter(
-                        include=inc,
-                        exclude=exc,
-                        max_size=parse_size(ms),
-                    )
-
-                result = run_sync(
-                    client=client,
-                    connector=connector,
-                    kb_id=entry_kb,
+                result = run_entries_sync(
+                    client,
+                    group,
+                    resolve_connector=_resolve_connector,
                     dry_run=dry_run,
                     verbose=verbose,
                     quiet=quiet,
-                    manifest_filter=mf,
-                    concurrency=entry.get("concurrency", concurrency),
+                    concurrency=concurrency,
+                    max_file_size=max_file_size,
                 )
 
                 if not quiet:

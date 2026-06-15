@@ -139,6 +139,27 @@ def _storage_to_text(storage_html: str, title: str = "") -> str:
     return title.strip()
 
 
+def _finalize_page_text(
+    text: str,
+    *,
+    title: str,
+    page_id: str,
+    space_key: str,
+    base_url: str,
+) -> str:
+    """Ensure non-empty, unique text for Open WebUI vector deduplication.
+
+    OWUI hashes extracted content and rejects duplicates. Multiple Confluence
+    pages (empty bodies, identical index pages, same content across spaces)
+    would otherwise share the same hash — including e3b0c442… for "".
+    """
+    body = text.strip() or title.strip() or f"Confluence page {page_id}"
+    source = f"confluence:{space_key}:{page_id}"
+    if base_url:
+        source = f"{source} {base_url.rstrip('/')}/pages/viewpage.action?pageId={page_id}"
+    return f"{body}\n\n---\n{source}"
+
+
 class ConfluenceConnector(BaseConnector):
     """Sync pages from a Confluence space.
 
@@ -285,6 +306,12 @@ class ConfluenceConnector(BaseConnector):
         used_keys.add(key)
         return dir_path, filename
 
+    def _space_prefixed_path(self, dir_path: str) -> str:
+        """Prefix ancestor path with Confluence space key for multi-space KBs."""
+        if dir_path:
+            return f"{self.space_key}/{dir_path}"
+        return self.space_key
+
     def _add_page_entry(
         self,
         entries: list[ManifestEntry],
@@ -299,6 +326,7 @@ class ConfluenceConnector(BaseConnector):
             f"{page_id}:v{version}".encode()
         ).hexdigest()[:16]
 
+        dir_path = self._space_prefixed_path(dir_path)
         dir_path, filename = self._unique_path_filename(page, dir_path, used_keys)
 
         entries.append(
@@ -333,7 +361,15 @@ class ConfluenceConnector(BaseConnector):
         data = resp.json()
 
         storage = data.get("body", {}).get("storage", {}).get("value", "")
-        text = _storage_to_text(storage, title=data.get("title", ""))
+        title = data.get("title", "")
+        text = _storage_to_text(storage, title=title)
+        text = _finalize_page_text(
+            text,
+            title=title,
+            page_id=page_id,
+            space_key=self.space_key,
+            base_url=self._base_url,
+        )
         return text.encode("utf-8")
 
     def close(self) -> None:
