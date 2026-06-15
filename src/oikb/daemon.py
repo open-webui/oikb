@@ -187,14 +187,36 @@ async def history_endpoint(
 )
 async def trigger_sync(identifier: str, dry_run: bool = False):
     """Triggers an immediate sync matching the given alias or Knowledge Base ID. The sync runs asynchronously in the background. Use get_sync_status to check progress. Set dry_run=true to preview changes without uploading."""
-    for entry in _entries:
-        if entry.get("name") == identifier or entry.get("kb-id") == identifier:
-            if dry_run:
-                result = await _run_entry(entry, dry_run=True)
-                return {"dry_run": True, "name": entry.get("name"), "kb_id": entry.get("kb-id"), "result": result}
-            asyncio.create_task(_run_entry(entry))
-            return {"triggered": True, "name": entry.get("name"), "kb_id": entry.get("kb-id")}
-    return {"triggered": False, "error": f"No entry matching '{identifier}'"}
+    from oikb.kb_sync import group_entries_by_kb
+
+    matched = [
+        entry
+        for entry in _entries
+        if entry.get("name") == identifier or entry.get("kb-id") == identifier
+    ]
+    if not matched:
+        return {"triggered": False, "error": f"No entry matching '{identifier}'"}
+
+    kb_id = matched[0]["kb-id"]
+    group = next(g for g in group_entries_by_kb(_entries) if g[0]["kb-id"] == kb_id)
+
+    if dry_run:
+        result = await _run_kb_group(group, dry_run=True)
+        return {
+            "dry_run": True,
+            "name": identifier,
+            "kb_id": kb_id,
+            "sources": [e.get("source") for e in group],
+            "result": result,
+        }
+
+    asyncio.create_task(_run_kb_group(group))
+    return {
+        "triggered": True,
+        "name": identifier,
+        "kb_id": kb_id,
+        "sources": [e.get("source") for e in group],
+    }
 
 
 # ── Scheduler ────────────────────────────────────────────────────
@@ -240,75 +262,61 @@ async def _send_notification(entry: dict, payload: dict) -> None:
 
 
 async def _run_entry(entry: dict, dry_run: bool = False) -> dict | None:
-    """Run a single sync for an entry.
+    """Run a single yaml entry (delegates to kb group sync)."""
+    return await _run_kb_group([entry], dry_run=dry_run)
 
-    Uses a per-KB lock to prevent overlapping syncs to the same
-    Knowledge Base (e.g. webhook fires while a scheduled sync is running).
-    """
-    kb_id = entry["kb-id"]
 
-    # Get or create a lock for this KB.
+async def _run_kb_group(entries: list[dict], dry_run: bool = False) -> dict | None:
+    """Run one or more sources into the same Knowledge Base."""
+    kb_id = entries[0]["kb-id"]
+
     if kb_id not in _sync_locks:
         _sync_locks[kb_id] = asyncio.Lock()
     lock = _sync_locks[kb_id]
 
     if lock.locked():
-        log.info(f"Skipping {entry.get('source', '?')} — sync already running for {kb_id}")
-        return {"skipped": True, "reason": "sync already running"} if dry_run else None
+        from oikb.kb_sync import sources_label
+
+        log.info(
+            f"Waiting for {sources_label(entries)} — sync already running for {kb_id}"
+        )
 
     async with lock:
-        return await _run_entry_locked(entry, dry_run=dry_run)
+        return await _run_kb_group_locked(entries, dry_run=dry_run)
 
 
-async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
-    """Inner sync logic, called under the per-KB lock."""
+async def _run_kb_group_locked(entries: list[dict], dry_run: bool = False) -> dict | None:
+    """Inner sync logic for a kb-id group."""
     from oikb.cli import _make_client, _resolve_connector
-    from oikb.sync import run_sync
+    from oikb.kb_sync import run_entries_sync, sources_label
 
-    source = entry["source"]
-    kb_id = entry["kb-id"]
+    label = sources_label(entries)
+    kb_id = entries[0]["kb-id"]
     started_at = time.time()
 
-    _scheduler_state[source] = {
-        **_scheduler_state.get(source, {}),
-        "name": entry.get("name", source),
-        "status": "running",
-        "started_at": started_at,
-    }
+    for entry in entries:
+        source = entry["source"]
+        _scheduler_state[source] = {
+            **_scheduler_state.get(source, {}),
+            "name": entry.get("name", source),
+            "status": "running",
+            "started_at": started_at,
+        }
 
     try:
-        connector = _resolve_connector(
-            source,
-            branch=entry.get("branch"),
-            path=entry.get("path"),
-        )
         client = _make_client(
-            url=entry.get("url"),
-            token=entry.get("token"),
+            url=entries[0].get("url"),
+            token=entries[0].get("token"),
         )
-
-        mf = None
-        entry_filter = entry.get("filter", {})
-        inc = entry_filter.get("include")
-        exc = entry_filter.get("exclude")
-        ms = entry_filter.get("max-size")
-        if inc or exc or ms:
-            from oikb.sync import build_manifest_filter, parse_size
-            mf = build_manifest_filter(
-                include=inc,
-                exclude=exc,
-                max_size=parse_size(ms),
-            )
 
         result = await asyncio.to_thread(
-            run_sync,
-            client=client,
-            connector=connector,
-            kb_id=kb_id,
+            run_entries_sync,
+            client,
+            entries,
+            resolve_connector=_resolve_connector,
             dry_run=dry_run,
             quiet=True,
-            manifest_filter=mf,
-            concurrency=entry.get("concurrency", 1),
+            concurrency=entries[0].get("concurrency", 1),
         )
         client.close()
 
@@ -325,119 +333,122 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
         duration_ms = int(duration_s * 1000)
         status = "success" if not result.errors else "partial"
 
-        _scheduler_state[source] = {
-            "name": entry.get("name", source),
-            "status": status,
-            "last_sync": time.time(),
-            "duration_ms": duration_ms,
-            "files_added": result.added,
-            "files_modified": result.modified,
-            "files_deleted": result.deleted,
-            "unmodified": result.unmodified,
-            "errors": result.errors or [],
-        }
+        for entry in entries:
+            source = entry["source"]
+            _scheduler_state[source] = {
+                "name": entry.get("name", source),
+                "status": status,
+                "last_sync": time.time(),
+                "duration_ms": duration_ms,
+                "files_added": result.added,
+                "files_modified": result.modified,
+                "files_deleted": result.deleted,
+                "unmodified": result.unmodified,
+                "errors": result.errors or [],
+            }
 
-        record_sync(
-            source=source,
-            status=status,
-            duration_seconds=duration_s,
-            files_added=result.added,
-            files_modified=result.modified,
-            files_deleted=result.deleted,
-        )
-
-        if _history:
-            await asyncio.to_thread(
-                _history.log,
+            record_sync(
                 source=source,
-                kb_id=kb_id,
-                status="success",
-                started_at=started_at,
+                status=status,
+                duration_seconds=duration_s,
                 files_added=result.added,
                 files_modified=result.modified,
                 files_deleted=result.deleted,
-                unmodified=result.unmodified,
             )
+
+            if _history:
+                await asyncio.to_thread(
+                    _history.log,
+                    source=source,
+                    kb_id=kb_id,
+                    status="success",
+                    started_at=started_at,
+                    files_added=result.added,
+                    files_modified=result.modified,
+                    files_deleted=result.deleted,
+                    unmodified=result.unmodified,
+                )
+
+            await _send_notification(entry, {
+                "source": source,
+                "kb_id": kb_id,
+                "status": status,
+                "duration_ms": duration_ms,
+                "summary": result.summary(),
+                "files_added": result.added,
+                "files_modified": result.modified,
+                "files_deleted": result.deleted,
+                "errors": result.errors or [],
+            })
 
         log.info(
-            f"Synced {source} -> {kb_id}: {result.summary()} ({duration_ms}ms)"
+            f"Synced {label} -> {kb_id}: {result.summary()} ({duration_ms}ms)"
         )
-
-        await _send_notification(entry, {
-            "source": source,
-            "kb_id": kb_id,
-            "status": status,
-            "duration_ms": duration_ms,
-            "summary": result.summary(),
-            "files_added": result.added,
-            "files_modified": result.modified,
-            "files_deleted": result.deleted,
-            "errors": result.errors or [],
-        })
 
     except Exception as e:
-        _scheduler_state[source] = {
-            "name": entry.get("name", source),
-            "status": "error",
-            "last_sync": time.time(),
-            "error": str(e),
-        }
-        record_sync(
-            source=source,
-            status="error",
-            duration_seconds=time.time() - started_at,
-        )
-        if _history:
-            await asyncio.to_thread(
-                _history.log,
+        for entry in entries:
+            source = entry["source"]
+            _scheduler_state[source] = {
+                "name": entry.get("name", source),
+                "status": "error",
+                "last_sync": time.time(),
+                "error": str(e),
+            }
+            record_sync(
                 source=source,
-                kb_id=kb_id,
                 status="error",
-                started_at=started_at,
-                error=str(e),
+                duration_seconds=time.time() - started_at,
             )
-        log.error(f"Sync failed for {source}: {e}")
+            if _history:
+                await asyncio.to_thread(
+                    _history.log,
+                    source=source,
+                    kb_id=kb_id,
+                    status="error",
+                    started_at=started_at,
+                    error=str(e),
+                )
+            log.error(f"Sync failed for {source}: {e}")
+            await _send_notification(entry, {
+                "source": source,
+                "kb_id": kb_id,
+                "status": "error",
+                "error": str(e),
+            })
 
-        await _send_notification(entry, {
-            "source": source,
-            "kb_id": kb_id,
-            "status": "error",
-            "error": str(e),
-        })
 
+async def _schedule_kb_group(entries: list[dict]) -> None:
+    """Run merged sync for all sources sharing a kb-id."""
+    from oikb.kb_sync import sources_label
 
-async def _schedule_entry(entry: dict) -> None:
-    """Run sync for one .oikb.yaml entry on a loop.
-
-    Supports both simple intervals ('30m', '1h') and cron expressions
-    ('0 */6 * * *', '0 6 * * 1-5').
-    """
-    raw_interval = entry.get("interval", "30m")
-    source = entry.get("source", "unknown")
+    raw_interval = entries[0].get("interval", "30m")
+    label = sources_label(entries)
     use_cron = _is_cron(str(raw_interval))
 
     if use_cron:
-        log.info(f"Scheduling {source} with cron: {raw_interval}")
+        log.info(f"Scheduling {label} with cron: {raw_interval}")
     else:
         interval = parse_interval(raw_interval)
-        log.info(f"Scheduling {source} every {interval}s")
+        log.info(f"Scheduling {label} every {interval}s")
 
     while not _shutdown_event.is_set():
-        await _run_entry(entry)
+        await _run_kb_group(entries)
 
-        # Compute wait until next run.
         if use_cron:
             delay = _next_cron_delay(str(raw_interval))
-            _scheduler_state.setdefault(source, {})["next_sync_in"] = f"{int(delay)}s"
         else:
-            delay = float(interval)
-            _scheduler_state.setdefault(source, {})["next_sync_in"] = f"{interval}s"
+            delay = float(parse_interval(raw_interval))
+
+        for entry in entries:
+            _scheduler_state.setdefault(entry["source"], {})["next_sync_in"] = (
+                f"{int(delay)}s" if use_cron else f"{delay}s"
+            )
 
         try:
             await asyncio.wait_for(_shutdown_event.wait(), timeout=delay)
-            break  # Shutdown requested.
+            break
         except asyncio.TimeoutError:
-            pass  # Time elapsed, run again.
+            pass
 
 
 async def _run_scheduler(entries: list[dict]) -> None:
@@ -445,11 +456,14 @@ async def _run_scheduler(entries: list[dict]) -> None:
     global _shutdown_event
     _shutdown_event = asyncio.Event()
 
+    from oikb.kb_sync import group_entries_by_kb
+
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _shutdown_event.set)
 
-    tasks = [asyncio.create_task(_schedule_entry(e)) for e in entries]
+    groups = group_entries_by_kb(entries)
+    tasks = [asyncio.create_task(_schedule_kb_group(group)) for group in groups]
 
     await _shutdown_event.wait()
     for task in tasks:
