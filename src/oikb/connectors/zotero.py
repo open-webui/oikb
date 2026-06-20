@@ -236,8 +236,15 @@ class ZoteroConnector(BaseConnector):
     def _checksum(self, item_key: str, version: int, attachment_key: str) -> tuple[str, int]:
         """Return (checksum, size) for an attachment per the configured checksum mode."""
         if self.checksum_mode == "content":
-            data = self._get_text(attachment_key).encode("utf-8")
-            return hashlib.sha256(data).hexdigest(), len(data)
+            try:
+                data = self._get_text(attachment_key).encode("utf-8")
+                return hashlib.sha256(data).hexdigest(), len(data)
+            except Exception:
+                # Text isn't retrievable (e.g. no file in Zotero storage). Never let one
+                # bad attachment abort the whole manifest: fall back to the version
+                # checksum so the entry is still created, and the failure surfaces (and is
+                # reported) at upload time through the normal per-file error path.
+                pass
         digest = hashlib.sha256(f"{item_key}:{version}:{attachment_key}".encode()).hexdigest()
         return digest, 0  # size unknown without downloading
 
@@ -254,7 +261,16 @@ class ZoteroConnector(BaseConnector):
         except Exception:
             pass  # not indexed; fall back to downloading and extracting
 
-        pdf_bytes = self._zot.file(attachment_key)
+        try:
+            pdf_bytes = self._zot.file(attachment_key)
+        except Exception as e:
+            raise RuntimeError(
+                f"Zotero has no downloadable file for attachment {attachment_key} ({e}). "
+                "Its bytes aren't in Zotero storage, so neither the fulltext API nor the "
+                "file endpoint can return content. Check that file syncing is enabled and "
+                "your storage quota isn't exceeded, or whether this attachment is a web "
+                "link or a WebDAV-only / linked file."
+            ) from e
         try:
             import fitz  # pymupdf
         except ImportError as e:
