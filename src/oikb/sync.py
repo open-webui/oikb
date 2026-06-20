@@ -210,7 +210,10 @@ def _run_sync_inner(
     modified: list[dict[str, Any]] = diff.get("modified", [])
     deleted: list[dict[str, Any]] = diff.get("deleted", [])
     unmodified_count: int = diff.get("unmodified_count", 0)
-    mkdir: list[str] = diff.get("mkdir", [])
+    # Sort parent-first: lexicographic order puts "a" before "a/b", so a nested
+    # directory is never created before its parent (whose id we need), and the
+    # dry-run diff lists dirs in a stable, readable order.
+    mkdir: list[str] = sorted(diff.get("mkdir", []))
     rmdir: list[str] = diff.get("rmdir", [])
     directory_map: dict[str, str] = diff.get("directory_map", {})
 
