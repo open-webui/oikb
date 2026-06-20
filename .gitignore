@@ -11,3 +11,6 @@ build/
 .DS_Store
 Thumbs.db
 uv.lock
+
+# Personal, untracked scratch (scripts, configs, secrets)
+perso/
