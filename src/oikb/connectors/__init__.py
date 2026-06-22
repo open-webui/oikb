@@ -6,6 +6,20 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 
+class SourceFileUnavailable(Exception):
+    """A file listed in the manifest has no retrievable content at the source.
+
+    Raised by a connector's read_file() when the source advertised a file but its
+    bytes cannot be fetched through no fault of oikb, e.g. a Zotero attachment
+    whose file isn't in storage (a web-link / linked-file / WebDAV-only item).
+
+    The sync treats this as a *non-fatal* skip: the file is left out of the
+    Knowledge Base and reported as a warning, so a run whose only problems are
+    unavailable source files still succeeds (exit 0). Any other exception from
+    read_file() remains a hard error that fails the sync.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ManifestEntry:
     """A single file in the source manifest.

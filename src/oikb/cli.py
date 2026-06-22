@@ -453,6 +453,8 @@ def sync(
                     prefix = "Dry run" if dry_run else "Done"
                     click.echo(f"  {prefix}: {result.summary()}")
 
+                _echo_warnings(result.warnings)
+
                 if result.errors:
                     has_errors = True
 
@@ -504,11 +506,29 @@ def sync(
         prefix = "Dry run" if dry_run else "Sync complete"
         click.echo(f"{prefix}: {result.summary()}")
 
+    _echo_warnings(result.warnings)
+
     if result.errors:
         click.echo(click.style(f"\n{len(result.errors)} error(s):", fg="red"), err=True)
         for err in result.errors:
             click.echo(f"  • {err}", err=True)
         sys.exit(1)
+
+
+def _echo_warnings(warnings: list[str] | None) -> None:
+    """Print non-fatal skip warnings (source files with no retrievable content).
+
+    These never affect the exit code; only result.errors does. Printed here, after
+    the run, because the live progress bar that shows them is transient.
+    """
+    if not warnings:
+        return
+    click.echo(
+        click.style(f"\n{len(warnings)} warning(s) (skipped, not fatal):", fg="yellow"),
+        err=True,
+    )
+    for w in warnings:
+        click.echo(f"  • {w}", err=True)
 
 
 # ── diff ────────────────────────────────────────────────────────

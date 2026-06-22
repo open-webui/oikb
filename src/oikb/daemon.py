@@ -335,6 +335,7 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
             "files_deleted": result.deleted,
             "unmodified": result.unmodified,
             "errors": result.errors or [],
+            "warnings": result.warnings or [],
         }
 
         record_sync(
@@ -373,6 +374,7 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
             "files_modified": result.modified,
             "files_deleted": result.deleted,
             "errors": result.errors or [],
+            "warnings": result.warnings or [],
         })
 
     except Exception as e:

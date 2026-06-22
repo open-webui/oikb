@@ -7,6 +7,10 @@ Knowledge Base directories.
 This connector is READ-ONLY with respect to Zotero: it never modifies, deletes, or
 adds anything to your Zotero library.
 
+An attachment whose file isn't downloadable from Zotero (web link, linked file, or
+bytes not in storage) is skipped with a warning rather than failing the sync: those
+are Zotero-side data gaps, not oikb errors.
+
 Auth and options via env vars:
   ZOTERO_LIBRARY_ID    Zotero library id (required)
   ZOTERO_LIBRARY_TYPE  'user' or 'group' (default: user)
@@ -30,7 +34,7 @@ import os
 import re
 import tempfile
 
-from oikb.connectors import BaseConnector, ManifestEntry
+from oikb.connectors import BaseConnector, ManifestEntry, SourceFileUnavailable
 
 # Separator between collection names in a source hierarchy string.
 HIERARCHY_SEP = "%%"
@@ -264,7 +268,11 @@ class ZoteroConnector(BaseConnector):
         try:
             pdf_bytes = self._zot.file(attachment_key)
         except Exception as e:
-            raise RuntimeError(
+            # The attachment exists in Zotero's metadata but its bytes aren't
+            # retrievable. This is a Zotero-side data gap, not an oikb failure, so
+            # raise SourceFileUnavailable: the sync skips this one file with a
+            # warning instead of aborting / failing the whole run.
+            raise SourceFileUnavailable(
                 f"Zotero has no downloadable file for attachment {attachment_key} ({e}). "
                 "Its bytes aren't in Zotero storage, so neither the fulltext API nor the "
                 "file endpoint can return content. Check that file syncing is enabled and "
