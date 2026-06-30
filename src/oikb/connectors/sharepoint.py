@@ -86,6 +86,7 @@ class SharePointConnector(BaseConnector):
             base_url="https://graph.microsoft.com/v1.0",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=60.0,
+            follow_redirects=True,
         )
 
         # Resolve site ID.
