@@ -8,6 +8,9 @@ build/
 .eggs/
 *.egg
 .pytest_cache/
+.env
 .DS_Store
 Thumbs.db
 uv.lock
+.yaml
+.oikb.yaml
