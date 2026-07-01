@@ -91,6 +91,8 @@ class GDriveConnector(BaseConnector):
                     fields="nextPageToken, files(id, name, mimeType, md5Checksum, modifiedTime, size)",
                     pageSize=1000,
                     pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
                 )
                 .execute()
             )
@@ -140,14 +142,26 @@ class GDriveConnector(BaseConnector):
             raise FileNotFoundError(f"File not found in Drive: {path}/{filename}")
 
         # Check if it needs export.
-        meta = self._service.files().get(fileId=file_id, fields="mimeType").execute()
+        meta = (
+            self._service.files()
+            .get(fileId=file_id, fields="mimeType", supportsAllDrives=True)
+            .execute()
+        )
         mime = meta["mimeType"]
 
         if mime in _EXPORT_MIMES:
             export_mime, _ = _EXPORT_MIMES[mime]
-            return self._service.files().export(fileId=file_id, mimeType=export_mime).execute()
+            return (
+                self._service.files()
+                .export(fileId=file_id, mimeType=export_mime)
+                .execute()
+            )
 
-        return self._service.files().get_media(fileId=file_id).execute()
+        return (
+            self._service.files()
+            .get_media(fileId=file_id, supportsAllDrives=True)
+            .execute()
+        )
 
     def _find_file(self, path: str, filename: str) -> str | None:
         """Find a file ID by navigating the folder path."""
@@ -168,6 +182,8 @@ class GDriveConnector(BaseConnector):
                     .list(
                         q=f"'{current_folder}' in parents and name = '{segment}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
                         fields="files(id)",
+                        supportsAllDrives=True,
+                        includeItemsFromAllDrives=True,
                     )
                     .execute()
                 )
@@ -182,6 +198,8 @@ class GDriveConnector(BaseConnector):
             .list(
                 q=f"'{current_folder}' in parents and name = '{search_name}' and trashed = false",
                 fields="files(id)",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
             )
             .execute()
         )

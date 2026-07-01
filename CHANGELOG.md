@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Google Drive**: sync now works for folders inside a Shared Drive (formerly Team Drive). The Drive API `files.list` calls were missing `supportsAllDrives` and `includeItemsFromAllDrives`, so Shared Drive contents were invisible and the sync reported "nothing to do". File downloads/exports now pass `supportsAllDrives` as well.
+
 ## [0.3.6] - 2026-05-28
 
 ### Added
