@@ -115,6 +115,7 @@ services:
 
   oikb:
     image: ghcr.io/open-webui/oikb:latest
+    working_dir: /app
     environment:
       - OPEN_WEBUI_URL=http://open-webui:8080
       - OPEN_WEBUI_API_KEY=${OPEN_WEBUI_API_KEY}
