@@ -53,7 +53,14 @@ def _resolve_connector(source: str, branch: str | None = None, path: str | None 
     if source.startswith("gitlab:"):
         from oikb.connectors.gitlab import GitLabConnector, parse_gitlab_source
         parsed = parse_gitlab_source(source)
-        return GitLabConnector(owner=parsed["owner"], repo=parsed["repo"], branch=branch, path=path or parsed.get("path"))
+        return GitLabConnector(
+            owner=parsed.get("owner"),
+            repo=parsed.get("repo"),
+            project_id=parsed.get("project_id"),
+            branch=branch,
+            path=path or parsed.get("path"),
+            is_wiki=bool(parsed.get("wiki")),
+        )
 
     if source.startswith("s3://"):
         from oikb.connectors.s3 import S3Connector, parse_s3_source

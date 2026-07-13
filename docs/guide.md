@@ -242,6 +242,21 @@ oikb sync bitbucket:owner/repo --kb-id your-kb-id
 
 Requires `GITLAB_TOKEN` or `BITBUCKET_TOKEN` respectively.
 
+To sync a project's **wiki** instead of its repository, add `?wiki=true` to the
+GitLab source. Each wiki page becomes one file, preserving the page hierarchy
+(an `api/auth` slug syncs as `api/auth.md`). `GITLAB_TOKEN`/`GITLAB_URL` are the
+same as for repositories; `--branch` and `--path` don't apply in wiki mode.
+ 
+The project can be given as a path or as a numeric project ID — the numeric form
+avoids namespace/subgroup encoding entirely (find it under the project's
+Settings → General in GitLab):
+ 
+```bash
+oikb sync "gitlab:owner/repo?wiki=true" --kb-id your-kb-id
+oikb sync "gitlab:group/subgroup/project?wiki=true" --kb-id your-kb-id
+oikb sync "gitlab:42?wiki=true" --kb-id your-kb-id
+```
+
 ### Confluence
 
 ```bash

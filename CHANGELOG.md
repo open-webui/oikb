@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+ 
+- **GitLab project wikis**: add `?wiki=true` to a `gitlab:` source to sync a project's wiki instead of its repository (e.g. `gitlab:owner/repo?wiki=true`). Each wiki page becomes a file, preserving the page hierarchy from its slug, via the Project Wikis API. Reuses `GITLAB_TOKEN`/`GITLAB_URL`; no new dependency.
+- **GitLab numeric project IDs**: a `gitlab:` source may be a numeric project ID (e.g. `gitlab:42`, `gitlab:42?wiki=true`), used directly as the API `:id` — handy when the namespace path is deep or awkward to encode.
+- **GitLab subgroup paths**: sources now accept the full nested namespace (e.g. `gitlab:group/subgroup/project?wiki=true`), URL-encoding the whole project path.
+### Changed
+ 
+- GitLab wiki sync uses `with_content=1` on the wikis list endpoint when available and falls back to fetching each page via `GET /wikis/:slug` on older GitLab instances that don't return page content inline.
+
 ## [0.3.6] - 2026-05-28
 
 ### Added
