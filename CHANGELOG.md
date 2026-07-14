@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Zotero**: `ZOTERO_INCLUDE_NOTES` and `ZOTERO_INCLUDE_ANNOTATIONS` env flags. When enabled, an item's child-note text and its PDF highlights/comments are appended to the extracted `.txt` (a `=== NOTES ===` section, then an `=== ANNOTATIONS ===` section); items with notes but no PDF surface as their own notes-only file. Change detection works in both `version` and `content` checksum modes.
+
 ## [0.3.6] - 2026-05-28
 
 ### Added

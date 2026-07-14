@@ -180,9 +180,19 @@ oikb sync "zotero:Research%%Machine Learning" --kb-id your-kb-id
 | `ZOTERO_API_KEY` | Zotero API key (required) |
 | `ZOTERO_CHECKSUM` | Change detection: `version` (cheap, default) or `content` (hashes extracted text) |
 | `ZOTERO_EXCLUDE` | `;`-separated subcollection paths to skip, relative to the synced root (e.g. when syncing `zotero:Research`, use `Archive;Drafts`) |
+| `ZOTERO_INCLUDE_NOTES` | When truthy (`1`/`true`/`yes`/`on`), append child-note text to each item's `.txt`. Items that have notes but no PDF surface as their own notes-only file. |
+| `ZOTERO_INCLUDE_ANNOTATIONS` | When truthy, append PDF highlights and comments to each attachment's `.txt`. |
 
 Text is taken from Zotero's indexed fulltext when available, falling back to extracting it
 from the PDF with PyMuPDF. Requires the extra: `pip install oikb[zotero]`.
+
+With `ZOTERO_INCLUDE_NOTES` and/or `ZOTERO_INCLUDE_ANNOTATIONS` enabled, an attachment's
+`.txt` is the PDF body, then a `=== NOTES ===` section, then an `=== ANNOTATIONS ===`
+section. Notes come back with the item's children for free, but annotations are children of
+the attachment, so enabling them costs one extra API call per attachment in `version`
+checksum mode (`content` mode already downloads everything). Change detection stays correct
+in both modes: editing a note or annotation, which bumps only its own version, still updates
+the file.
 
 ## Filters
 
