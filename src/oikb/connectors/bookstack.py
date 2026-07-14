@@ -17,7 +17,13 @@ from oikb.connectors import BaseConnector, ManifestEntry
 class BookStackConnector(BaseConnector):
     """Sync pages from BookStack."""
 
-    def __init__(self, base_url: str | None = None, token_id: str | None = None, token_secret: str | None = None):
+    def __init__(
+        self,
+        base_url: str | None = None,
+        token_id: str | None = None,
+        token_secret: str | None = None,
+        book_id: str | None = None,
+    ):
         self._url = (base_url or os.environ.get("BOOKSTACK_URL", "")).rstrip("/")
         tid = token_id or os.environ.get("BOOKSTACK_TOKEN_ID", "")
         ts = token_secret or os.environ.get("BOOKSTACK_TOKEN_SECRET", "")
@@ -25,12 +31,16 @@ class BookStackConnector(BaseConnector):
             raise ValueError("BookStack credentials required. Set BOOKSTACK_URL, BOOKSTACK_TOKEN_ID, BOOKSTACK_TOKEN_SECRET.")
         self._http = httpx.Client(base_url=self._url, headers={"Authorization": f"Token {tid}:{ts}"}, timeout=30.0)
         self._cache: dict[str, str] = {}
+        self.book_id = book_id
 
     def build_manifest(self) -> list[ManifestEntry]:
         entries: list[ManifestEntry] = []
         offset = 0
         while True:
-            resp = self._http.get("/api/pages", params={"count": 100, "offset": offset})
+            params: dict[str, int | str] = {"count": 100, "offset": offset}
+            if self.book_id:
+                params["filter[book_id]"] = self.book_id
+            resp = self._http.get("/api/pages", params=params)
             resp.raise_for_status()
             data = resp.json()
             for page in data.get("data", []):
@@ -57,4 +67,10 @@ class BookStackConnector(BaseConnector):
 
 
 def parse_bookstack_source(source: str) -> dict[str, str | None]:
-    return {}
+    book_id = source.removeprefix("bookstack:")
+    if not book_id:
+        return {"book_id": None}
+
+    if not book_id.isdecimal():
+        raise ValueError("Invalid BookStack source. Expected a numeric book ID, e.g. bookstack:12")
+    return {"book_id": book_id}

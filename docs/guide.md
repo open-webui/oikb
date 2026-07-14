@@ -20,6 +20,7 @@ A complete guide to syncing content into Open WebUI Knowledge Bases.
   - [GitHub](#github)
   - [GitLab / Bitbucket](#gitlab--bitbucket)
   - [Confluence](#confluence)
+  - [BookStack](#bookstack)
   - [Cloud Storage (S3 / GCS / Azure)](#cloud-storage-s3--gcs--azure)
   - [SharePoint](#sharepoint)
   - [Nextcloud](#nextcloud)
@@ -249,6 +250,16 @@ oikb sync confluence:SPACE_KEY --kb-id your-kb-id
 ```
 
 Requires `CONFLUENCE_URL`, `CONFLUENCE_USERNAME`, and `CONFLUENCE_API_TOKEN`.
+
+### BookStack
+
+```bash
+oikb sync bookstack: --kb-id your-kb-id       # all pages
+oikb sync bookstack:12 --kb-id your-kb-id     # one book ID
+```
+
+Requires `BOOKSTACK_URL`, `BOOKSTACK_TOKEN_ID`, and `BOOKSTACK_TOKEN_SECRET`.
+Use one Knowledge Base per book if you want to combine multiple BookStack books in Open WebUI.
 
 ### Cloud Storage (S3 / GCS / Azure)
 
