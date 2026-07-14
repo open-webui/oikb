@@ -21,6 +21,19 @@ Auth and options via env vars:
   ZOTERO_EXCLUDE       ';'-separated collection paths to skip, relative to the synced
                        root and using %% as separator. When syncing
                        "zotero:Research", exclude its subcollections as "Archive;Drafts".
+  ZOTERO_INCLUDE_NOTES        when truthy (1/true/yes/on), append the text of an item's
+                       child notes to its extracted PDF .txt. An item that has notes but no
+                       PDF still surfaces as its own notes-only .txt. Free: notes already
+                       come back with the item's children, so no extra API calls.
+  ZOTERO_INCLUDE_ANNOTATIONS  when truthy, append PDF highlights and comments
+                       (annotationText / annotationComment) to each attachment's .txt. In
+                       'version' checksum mode this costs one extra API call per attachment,
+                       since annotations are children of the attachment, not of the item.
+
+When both are enabled, an attachment's .txt is the PDF body, then a "=== NOTES ==="
+section, then an "=== ANNOTATIONS ===" section. Change detection still works: 'content'
+mode hashes the assembled text, and 'version' mode folds in the note and annotation
+versions (editing a note or annotation bumps its own version, not the item's).
 
 Source syntax: zotero:<hierarchy> where hierarchy uses %% as the separator, e.g.
   zotero:Research%%Machine Learning
@@ -30,6 +43,7 @@ An empty hierarchy (just "zotero:") syncs every top-level collection.
 from __future__ import annotations
 
 import hashlib
+import html
 import os
 import re
 import tempfile
@@ -53,6 +67,8 @@ class ZoteroConnector(BaseConnector):
         api_key: str | None = None,
         checksum: str | None = None,
         exclude: str | None = None,
+        include_notes: bool | None = None,
+        include_annotations: bool | None = None,
     ):
         self.hierarchy = hierarchy
         lib_id = library_id or os.environ.get("ZOTERO_LIBRARY_ID", "")
@@ -72,6 +88,17 @@ class ZoteroConnector(BaseConnector):
         exclude_raw = exclude if exclude is not None else os.environ.get("ZOTERO_EXCLUDE", "")
         self.excluded_paths = {p.strip() for p in exclude_raw.split(";") if p.strip()}
 
+        self.include_notes = (
+            include_notes
+            if include_notes is not None
+            else self._env_flag(os.environ.get("ZOTERO_INCLUDE_NOTES", ""))
+        )
+        self.include_annotations = (
+            include_annotations
+            if include_annotations is not None
+            else self._env_flag(os.environ.get("ZOTERO_INCLUDE_ANNOTATIONS", ""))
+        )
+
         try:
             from pyzotero import zotero
         except ImportError as e:
@@ -80,11 +107,16 @@ class ZoteroConnector(BaseConnector):
             ) from e
         self._zot = zotero.Zotero(lib_id, lib_type, key)
 
-        # (path, filename) -> attachment key, populated during build_manifest.
-        self._index: dict[tuple[str, str], str] = {}
+        # (path, filename) -> record describing what read_file should assemble.
+        # Record: {"attachment": key | None, "notes": [{"key", "version", "html"}]}.
+        # attachment is None for a notes-only file (an item with notes but no PDF).
+        self._index: dict[tuple[str, str], dict] = {}
         # attachment key -> extracted text, so read_file (and content-mode
         # checksumming) never extracts the same attachment twice.
         self._text_cache: dict[str, str] = {}
+        # attachment key -> its annotation items, so we fetch each attachment's
+        # annotations at most once (used by both checksum and read_file).
+        self._annotations_cache: dict[str, list[dict]] = {}
 
     # ── manifest ────────────────────────────────────────────────
 
@@ -106,12 +138,25 @@ class ZoteroConnector(BaseConnector):
 
         entries: list[ManifestEntry] = []
         for item_key, data in items.items():
+            notes = data["notes"] if self.include_notes else []
             for path in data["paths"] or [""]:
                 kb_path = path.replace(HIERARCHY_SEP, "/")
-                for idx, att_key in enumerate(data["attachments"]):
-                    filename = self._unique(kb_path, self._make_filename(data["title"], idx))
-                    checksum, size = self._checksum(item_key, data["version"], att_key)
-                    self._index[(kb_path, filename)] = att_key
+                if data["attachments"]:
+                    for idx, att_key in enumerate(data["attachments"]):
+                        filename = self._unique(kb_path, self._make_filename(data["title"], idx))
+                        checksum, size = self._checksum(item_key, data, att_key)
+                        self._index[(kb_path, filename)] = {"attachment": att_key, "notes": notes}
+                        entries.append(
+                            ManifestEntry(
+                                filename=filename, path=kb_path, checksum=checksum, size=size
+                            )
+                        )
+                elif notes:
+                    # An item with notes but no PDF: surface the notes on their own so
+                    # enabling ZOTERO_INCLUDE_NOTES never silently drops note content.
+                    filename = self._unique(kb_path, self._make_filename(data["title"], 0))
+                    checksum, size = self._checksum(item_key, data, None)
+                    self._index[(kb_path, filename)] = {"attachment": None, "notes": notes}
                     entries.append(
                         ManifestEntry(filename=filename, path=kb_path, checksum=checksum, size=size)
                     )
@@ -120,10 +165,10 @@ class ZoteroConnector(BaseConnector):
         return entries
 
     def read_file(self, path: str, filename: str) -> bytes:
-        att_key = self._index.get((path, filename))
-        if att_key is None:
+        record = self._index.get((path, filename))
+        if record is None:
             raise FileNotFoundError(f"Unknown Zotero file: {path}/{filename}")
-        return self._get_text(att_key).encode("utf-8")
+        return self._assemble(record["attachment"], record["notes"]).encode("utf-8")
 
     # ── collection traversal ────────────────────────────────────
 
@@ -160,8 +205,11 @@ class ZoteroConnector(BaseConnector):
     ) -> dict[str, dict]:
         """Recursively gather items (with attachments) and the paths they appear under.
 
-        Returns a dict: item_key -> {title, version, paths, attachments}. An item that
-        lives in several subcollections records each path it appears under.
+        Returns a dict: item_key -> {title, version, paths, attachments, notes}. An item
+        that lives in several subcollections records each path it appears under. `notes` is
+        the list of the item's child notes (each {key, version, html}); it is populated
+        regardless of self.include_notes so callers can decide, but is only emitted when the
+        flag is on.
         """
         if self.excluded_paths and current_path:
             for ex in self.excluded_paths:
@@ -171,21 +219,38 @@ class ZoteroConnector(BaseConnector):
         items: dict[str, dict] = {}
         for item in self._zot.everything(self._zot.collection_items(collection_key)):
             data = item.get("data", {})
-            if data.get("itemType") == "attachment":
+            item_type = data.get("itemType")
+            if item_type == "attachment":
                 continue  # standalone attachment, not a parent item
             item_key = item["key"]
-            children = self._zot.everything(self._zot.children(item_key))
-            attachments = [
-                c["key"] for c in children if c.get("data", {}).get("itemType") == "attachment"
-            ]
-            if not attachments:
+            if item_type == "note":
+                # A top-level standalone note: it is its own content, has no children.
+                attachments = []
+                notes = [self._note_record(item)]
+                title = self._note_title(notes[0]["html"])
+            else:
+                children = self._zot.everything(self._zot.children(item_key))
+                attachments = [
+                    c["key"] for c in children if c.get("data", {}).get("itemType") == "attachment"
+                ]
+                notes = [
+                    self._note_record(c)
+                    for c in children
+                    if c.get("data", {}).get("itemType") == "note"
+                ]
+                title = data.get("title", "Untitled")
+            # Skip only when there is genuinely nothing to emit: no PDF, and either notes
+            # are disabled or the item has none. With ZOTERO_INCLUDE_NOTES on, note-only
+            # items still surface (build_manifest gives them a notes-only .txt).
+            if not attachments and not (self.include_notes and notes):
                 continue
             if item_key not in items:
                 items[item_key] = {
-                    "title": data.get("title", "Untitled"),
+                    "title": title,
                     "version": item.get("version", data.get("version", 0)),
                     "paths": [],
                     "attachments": attachments,
+                    "notes": notes,
                 }
             if current_path:
                 if current_path not in items[item_key]["paths"]:
@@ -237,11 +302,17 @@ class ZoteroConnector(BaseConnector):
             i += 1
         return f"{stem}__{i}.{ext}"
 
-    def _checksum(self, item_key: str, version: int, attachment_key: str) -> tuple[str, int]:
-        """Return (checksum, size) for an attachment per the configured checksum mode."""
+    def _checksum(self, item_key: str, item: dict, attachment_key: str | None) -> tuple[str, int]:
+        """Return (checksum, size) for one KB file per the configured checksum mode.
+
+        A KB file is a PDF attachment plus, when enabled, the item's notes and the
+        attachment's annotations; the checksum must cover all of them. `attachment_key` is
+        None for a notes-only item.
+        """
+        notes = item["notes"] if self.include_notes else []
         if self.checksum_mode == "content":
             try:
-                data = self._get_text(attachment_key).encode("utf-8")
+                data = self._assemble(attachment_key, notes).encode("utf-8")
                 return hashlib.sha256(data).hexdigest(), len(data)
             except Exception:
                 # Text isn't retrievable (e.g. no file in Zotero storage). Never let one
@@ -249,8 +320,117 @@ class ZoteroConnector(BaseConnector):
                 # checksum so the entry is still created, and the failure surfaces (and is
                 # reported) at upload time through the normal per-file error path.
                 pass
-        digest = hashlib.sha256(f"{item_key}:{version}:{attachment_key}".encode()).hexdigest()
+        # Version mode. Editing a note or annotation bumps its own version, not the parent
+        # item's, so fold those versions in or such edits would go undetected.
+        parts = [item_key, str(item["version"]), attachment_key or ""]
+        if self.include_notes:
+            parts.append("n:" + ",".join(f"{n['key']}={n['version']}" for n in notes))
+        if self.include_annotations and attachment_key is not None:
+            try:
+                anns = self._get_annotations(attachment_key)
+                parts.append("a:" + ",".join(f"{a['key']}={self._version_of(a)}" for a in anns))
+            except Exception:
+                pass  # can't list annotations now; the failure resurfaces at read time
+        digest = hashlib.sha256(":".join(parts).encode()).hexdigest()
         return digest, 0  # size unknown without downloading
+
+    # ── notes & annotations ─────────────────────────────────────
+
+    @staticmethod
+    def _env_flag(raw: str) -> bool:
+        """Interpret an env var as a boolean (1/true/yes/on, case-insensitive)."""
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+
+    @staticmethod
+    def _version_of(item: dict) -> int:
+        """A Zotero item's version, whether it sits at the top level or under 'data'."""
+        return item.get("version", item.get("data", {}).get("version", 0))
+
+    @classmethod
+    def _note_record(cls, item: dict) -> dict:
+        """Reduce a note item to what we need: its key, version, and raw HTML body."""
+        return {
+            "key": item["key"],
+            "version": cls._version_of(item),
+            "html": item.get("data", {}).get("note", ""),
+        }
+
+    @classmethod
+    def _note_title(cls, note_html: str, max_length: int = 60) -> str:
+        """Derive a filename title for a standalone note from its first line of text."""
+        text = cls._html_to_text(note_html)
+        first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        if not first:
+            return "Untitled"
+        return first[:max_length].strip()
+
+    @staticmethod
+    def _html_to_text(note_html: str) -> str:
+        """Flatten a Zotero note's HTML into plain text (no external dependency)."""
+        if not note_html:
+            return ""
+        s = re.sub(r"(?i)<br\s*/?>", "\n", note_html)
+        s = re.sub(r"(?i)</(p|div|li|h[1-6]|tr|blockquote)>", "\n", s)
+        s = re.sub(r"(?i)<li[^>]*>", "- ", s)
+        s = re.sub(r"<[^>]+>", "", s)  # drop any remaining tags
+        s = html.unescape(s)
+        s = re.sub(r"[ \t]+\n", "\n", s)
+        s = re.sub(r"\n{3,}", "\n\n", s)
+        return s.strip()
+
+    def _assemble(self, attachment_key: str | None, notes: list[dict]) -> str:
+        """Build the .txt body: PDF text, then a notes section, then an annotations section.
+
+        `notes` is empty when ZOTERO_INCLUDE_NOTES is off; annotations are only fetched when
+        ZOTERO_INCLUDE_ANNOTATIONS is on. May raise SourceFileUnavailable if the PDF's bytes
+        can't be fetched (handled upstream as a non-fatal skip).
+        """
+        parts: list[str] = []
+        if attachment_key is not None:
+            parts.append(self._get_text(attachment_key))
+        if notes:
+            body = self._render_notes(notes)
+            if body:
+                parts.append("=== NOTES ===\n" + body)
+        if self.include_annotations and attachment_key is not None:
+            body = self._render_annotations(attachment_key)
+            if body:
+                parts.append("=== ANNOTATIONS ===\n" + body)
+        return "\n\n".join(p for p in parts if p)
+
+    def _render_notes(self, notes: list[dict]) -> str:
+        """Render note records to plain text, one block per note."""
+        blocks = [self._html_to_text(n["html"]) for n in notes]
+        return "\n\n".join(b for b in blocks if b)
+
+    def _get_annotations(self, attachment_key: str) -> list[dict]:
+        """Fetch (and cache) an attachment's annotation items, in reading order."""
+        if attachment_key not in self._annotations_cache:
+            children = self._zot.everything(self._zot.children(attachment_key))
+            anns = [
+                c for c in children if c.get("data", {}).get("itemType") == "annotation"
+            ]
+            anns.sort(key=lambda a: a.get("data", {}).get("annotationSortIndex", ""))
+            self._annotations_cache[attachment_key] = anns
+        return self._annotations_cache[attachment_key]
+
+    def _render_annotations(self, attachment_key: str) -> str:
+        """Render an attachment's highlights/comments to plain text, in reading order."""
+        blocks: list[str] = []
+        for ann in self._get_annotations(attachment_key):
+            data = ann.get("data", {})
+            quote = (data.get("annotationText") or "").strip()
+            comment = (data.get("annotationComment") or "").strip()
+            page = (data.get("annotationPageLabel") or "").strip()
+            prefix = f"[p. {page}] " if page else ""
+            lines: list[str] = []
+            if quote:
+                lines.append(f"{prefix}> {quote}")
+            if comment:
+                lines.append(f"{prefix}{comment}" if not quote else f"  {comment}")
+            if lines:
+                blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)
 
     def _get_text(self, attachment_key: str) -> str:
         """Extract (and cache) the text of a Zotero attachment."""
