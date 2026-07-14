@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -41,14 +42,25 @@ class SyncHistory:
     def __init__(self, db_path: Path | None = None):
         self.db_path = db_path or _DEFAULT_DB
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn: sqlite3.Connection | None = None
+        # One connection per thread. The daemon runs each sync through
+        # asyncio.to_thread(), so a single shared connection is handed to whichever
+        # pool thread happens to run the next source -- and sqlite3 refuses it with
+        # "SQLite objects created in a thread can only be used in that same thread",
+        # failing every source but the first.
+        self._local = threading.local()
 
     def _get_conn(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
-            self._conn.row_factory = sqlite3.Row
-            self._conn.executescript(_SCHEMA)
-        return self._conn
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+            conn.row_factory = sqlite3.Row
+            # WAL lets the concurrent sources read while one writes; the busy timeout
+            # makes the brief write-lock contention wait rather than raise.
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.executescript(_SCHEMA)
+            self._local.conn = conn
+        return conn
 
     def log(
         self,
@@ -133,6 +145,12 @@ class SyncHistory:
         return cursor.rowcount
 
     def close(self) -> None:
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        """Close this thread's connection, if it has one.
+
+        Connections are per-thread, so each thread closes its own; the others are
+        released when their thread exits.
+        """
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
