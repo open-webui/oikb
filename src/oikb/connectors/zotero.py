@@ -29,6 +29,9 @@ Auth and options via env vars:
                        (annotationText / annotationComment) to each attachment's .txt. In
                        'version' checksum mode this costs one extra API call per attachment,
                        since annotations are children of the attachment, not of the item.
+  ZOTERO_UNFILED_DIR   virtual directory name for library items that are in no collection
+                       (default: "_unfiled"). Only used by a whole-library sync. Exclude it
+                       entirely with ZOTERO_EXCLUDE=<that name>.
 
 When both are enabled, an attachment's .txt is the PDF body, then a "=== NOTES ==="
 section, then an "=== ANNOTATIONS ===" section. Change detection still works: 'content'
@@ -37,7 +40,10 @@ versions (editing a note or annotation bumps its own version, not the item's).
 
 Source syntax: zotero:<hierarchy> where hierarchy uses %% as the separator, e.g.
   zotero:Research%%Machine Learning
-An empty hierarchy (just "zotero:") syncs every top-level collection.
+An empty hierarchy (just "zotero:") syncs the whole library: every top-level collection
+becomes a directory, and items sitting directly in "My Library" (in no collection) are
+swept into the ZOTERO_UNFILED_DIR directory. A named hierarchy syncs only that subtree
+and never includes unfiled items.
 """
 
 from __future__ import annotations
@@ -69,6 +75,7 @@ class ZoteroConnector(BaseConnector):
         exclude: str | None = None,
         include_notes: bool | None = None,
         include_annotations: bool | None = None,
+        unfiled_dir: str | None = None,
     ):
         self.hierarchy = hierarchy
         lib_id = library_id or os.environ.get("ZOTERO_LIBRARY_ID", "")
@@ -98,6 +105,12 @@ class ZoteroConnector(BaseConnector):
             if include_annotations is not None
             else self._env_flag(os.environ.get("ZOTERO_INCLUDE_ANNOTATIONS", ""))
         )
+
+        # Virtual directory for items that live directly in the library (no collection).
+        raw_unfiled = (
+            unfiled_dir if unfiled_dir is not None else os.environ.get("ZOTERO_UNFILED_DIR", "")
+        )
+        self.unfiled_dir = raw_unfiled.strip().strip("/") or "_unfiled"
 
         try:
             from pyzotero import zotero
@@ -135,6 +148,9 @@ class ZoteroConnector(BaseConnector):
             # Whole library: each top-level collection becomes a top-level directory.
             for node in tree:
                 self._merge(items, self._collect_items(node["key"], all_collections, node["name"]))
+            # Items that live directly in the library (in no collection) are invisible to
+            # the collection walk, so sweep them into their own virtual directory.
+            self._merge(items, self._collect_unfiled())
 
         entries: list[ManifestEntry] = []
         for item_key, data in items.items():
@@ -211,47 +227,17 @@ class ZoteroConnector(BaseConnector):
         regardless of self.include_notes so callers can decide, but is only emitted when the
         flag is on.
         """
-        if self.excluded_paths and current_path:
-            for ex in self.excluded_paths:
-                if current_path == ex or current_path.startswith(f"{ex}{HIERARCHY_SEP}"):
-                    return {}
+        if self._is_excluded(current_path):
+            return {}
 
         items: dict[str, dict] = {}
         for item in self._zot.everything(self._zot.collection_items(collection_key)):
-            data = item.get("data", {})
-            item_type = data.get("itemType")
-            if item_type == "attachment":
-                continue  # standalone attachment, not a parent item
-            item_key = item["key"]
-            if item_type == "note":
-                # A top-level standalone note: it is its own content, has no children.
-                attachments = []
-                notes = [self._note_record(item)]
-                title = self._note_title(notes[0]["html"])
-            else:
-                children = self._zot.everything(self._zot.children(item_key))
-                attachments = [
-                    c["key"] for c in children if c.get("data", {}).get("itemType") == "attachment"
-                ]
-                notes = [
-                    self._note_record(c)
-                    for c in children
-                    if c.get("data", {}).get("itemType") == "note"
-                ]
-                title = data.get("title", "Untitled")
-            # Skip only when there is genuinely nothing to emit: no PDF, and either notes
-            # are disabled or the item has none. With ZOTERO_INCLUDE_NOTES on, note-only
-            # items still surface (build_manifest gives them a notes-only .txt).
-            if not attachments and not (self.include_notes and notes):
+            processed = self._process_item(item)
+            if processed is None:
                 continue
+            item_key, record = processed
             if item_key not in items:
-                items[item_key] = {
-                    "title": title,
-                    "version": item.get("version", data.get("version", 0)),
-                    "paths": [],
-                    "attachments": attachments,
-                    "notes": notes,
-                }
+                items[item_key] = record
             if current_path:
                 if current_path not in items[item_key]["paths"]:
                     items[item_key]["paths"].append(current_path)
@@ -266,6 +252,77 @@ class ZoteroConnector(BaseConnector):
             new_path = f"{current_path}{HIERARCHY_SEP}{sub_name}" if current_path else sub_name
             self._merge(items, self._collect_items(sub["key"], all_collections, new_path))
         return items
+
+    def _collect_unfiled(self) -> dict[str, dict]:
+        """Gather items that live directly in the library, in no collection.
+
+        The collection walk can't see these, and the Zotero API has no "unfiled" query, so
+        fetch every top-level item and keep the ones whose `collections` list is empty. They
+        are all routed into the single virtual self.unfiled_dir directory.
+        """
+        if self._is_excluded(self.unfiled_dir):
+            return {}
+        items: dict[str, dict] = {}
+        for item in self._zot.everything(self._zot.top()):
+            if item.get("data", {}).get("collections"):
+                continue  # filed in at least one collection; the tree walk handles it
+            processed = self._process_item(item)
+            if processed is None:
+                continue
+            item_key, record = processed
+            record["paths"] = [self.unfiled_dir]
+            items[item_key] = record
+        return items
+
+    def _is_excluded(self, path: str) -> bool:
+        """True if `path` equals or sits under any ZOTERO_EXCLUDE entry."""
+        if not path:
+            return False
+        return any(
+            path == ex or path.startswith(f"{ex}{HIERARCHY_SEP}") for ex in self.excluded_paths
+        )
+
+    def _process_item(self, item: dict) -> tuple[str, dict] | None:
+        """Reduce one Zotero item to a manifest record, or None if it has nothing to emit.
+
+        Shared by the collection walk and the unfiled sweep. Returns (item_key, record)
+        with record = {title, version, paths (empty; the caller fills it), attachments,
+        notes}. Returns None for standalone attachments and for items that have neither a
+        PDF nor (when ZOTERO_INCLUDE_NOTES is on) any notes.
+        """
+        data = item.get("data", {})
+        item_type = data.get("itemType")
+        if item_type == "attachment":
+            return None  # standalone attachment, not a parent item
+        item_key = item["key"]
+        if item_type == "note":
+            # A standalone note: it is its own content and has no children.
+            attachments: list[str] = []
+            notes = [self._note_record(item)]
+            title = self._note_title(notes[0]["html"])
+        else:
+            children = self._zot.everything(self._zot.children(item_key))
+            attachments = [
+                c["key"] for c in children if c.get("data", {}).get("itemType") == "attachment"
+            ]
+            notes = [
+                self._note_record(c)
+                for c in children
+                if c.get("data", {}).get("itemType") == "note"
+            ]
+            title = data.get("title", "Untitled")
+        # Skip only when there is genuinely nothing to emit: no PDF, and either notes are
+        # disabled or the item has none. With ZOTERO_INCLUDE_NOTES on, note-only items still
+        # surface (build_manifest gives them a notes-only .txt).
+        if not attachments and not (self.include_notes and notes):
+            return None
+        return item_key, {
+            "title": title,
+            "version": item.get("version", data.get("version", 0)),
+            "paths": [],
+            "attachments": attachments,
+            "notes": notes,
+        }
 
     @staticmethod
     def _merge(dest: dict[str, dict], src: dict[str, dict]) -> None:

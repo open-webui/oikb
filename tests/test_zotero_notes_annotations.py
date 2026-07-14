@@ -18,11 +18,16 @@ from oikb.connectors.zotero import ZoteroConnector
 # a PDF attachment, a child note, and a PDF annotation) and one standalone note.
 COLLECTIONS = [{"key": "COLL1", "data": {"name": "Research"}}]
 
-ITEM_ARTICLE = {"key": "IT1", "version": 5, "data": {"itemType": "journalArticle", "title": "Paper A"}}
+# Both top-level items are filed in COLL1 (collections set), so the unfiled sweep skips them.
+ITEM_ARTICLE = {
+    "key": "IT1",
+    "version": 5,
+    "data": {"itemType": "journalArticle", "title": "Paper A", "collections": ["COLL1"]},
+}
 ITEM_STANDALONE_NOTE = {
     "key": "IT2",
     "version": 3,
-    "data": {"itemType": "note", "note": "<p>Standalone thought</p>"},
+    "data": {"itemType": "note", "note": "<p>Standalone thought</p>", "collections": ["COLL1"]},
 }
 ATTACHMENT = {"key": "ATT1", "version": 6, "data": {"itemType": "attachment", "title": "Paper A.pdf"}}
 CHILD_NOTE = {
@@ -46,17 +51,21 @@ ANNOTATION = {
 class _FakeZot:
     """Minimal pyzotero.Zotero stand-in driven by in-memory dicts."""
 
-    def __init__(self, collections, items, children, fulltext):
+    def __init__(self, collections, items, children, fulltext, top=None):
         self._collections = collections
         self._items = items  # collection_key -> [item, ...]
         self._children = children  # parent_key -> [child, ...]
         self._fulltext = fulltext  # attachment_key -> str
+        self._top = top or []  # top-level items across the library (for the unfiled sweep)
 
     def everything(self, x):  # pyzotero pages through generators; our data is already whole
         return x
 
     def collections(self):
         return self._collections
+
+    def top(self):
+        return self._top
 
     def collection_items(self, key):
         return self._items.get(key, [])
@@ -81,7 +90,8 @@ def _make_conn(*, include_notes, include_annotations, checksum_mode="version", o
         overrides(children, items)
 
     conn = ZoteroConnector.__new__(ZoteroConnector)
-    conn._zot = _FakeZot(COLLECTIONS, items, children, {"ATT1": "PDF body text"})
+    # top() returns the library's top-level items; here both are filed in COLL1.
+    conn._zot = _FakeZot(COLLECTIONS, items, children, {"ATT1": "PDF body text"}, top=items["COLL1"])
     conn._index = {}
     conn._text_cache = {}
     conn._annotations_cache = {}
@@ -90,6 +100,7 @@ def _make_conn(*, include_notes, include_annotations, checksum_mode="version", o
     conn.checksum_mode = checksum_mode
     conn.include_notes = include_notes
     conn.include_annotations = include_annotations
+    conn.unfiled_dir = "_unfiled"
     return conn
 
 
