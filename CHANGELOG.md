@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **Zotero**: `ZOTERO_INCLUDE_NOTES` and `ZOTERO_INCLUDE_ANNOTATIONS` env flags. When enabled, an item's child-note text and its PDF highlights/comments are appended to the extracted `.txt` (a `=== NOTES ===` section, then an `=== ANNOTATIONS ===` section); items with notes but no PDF surface as their own notes-only file. Change detection works in both `version` and `content` checksum modes.
+- **Zotero**: a whole-library sync (`zotero:` with no hierarchy) now also picks up items that are in no collection and places them under `ZOTERO_UNFILED_DIR` (default `_unfiled/`). Previously only items inside collections were synced. A named hierarchy is unchanged and never includes unfiled items.
 
 ## [0.3.6] - 2026-05-28
 

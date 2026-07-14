@@ -165,7 +165,8 @@ Some connectors need an optional extra: `pip install oikb[gdrive]`, `pip install
 Syncs the text of PDF attachments in a Zotero collection to a Knowledge Base. The
 collection hierarchy maps to KB directories, and the connector is read-only with respect
 to Zotero (it never modifies your library). Source syntax uses `%%` as the hierarchy
-separator; an empty hierarchy (`zotero:`) syncs every top-level collection.
+separator; an empty hierarchy (`zotero:`) syncs the whole library, every top-level
+collection plus any items sitting directly in "My Library" (in no collection).
 
 ```bash
 export ZOTERO_LIBRARY_ID=123456
@@ -182,6 +183,7 @@ oikb sync "zotero:Research%%Machine Learning" --kb-id your-kb-id
 | `ZOTERO_EXCLUDE` | `;`-separated subcollection paths to skip, relative to the synced root (e.g. when syncing `zotero:Research`, use `Archive;Drafts`) |
 | `ZOTERO_INCLUDE_NOTES` | When truthy (`1`/`true`/`yes`/`on`), append child-note text to each item's `.txt`. Items that have notes but no PDF surface as their own notes-only file. |
 | `ZOTERO_INCLUDE_ANNOTATIONS` | When truthy, append PDF highlights and comments to each attachment's `.txt`. |
+| `ZOTERO_UNFILED_DIR` | Virtual directory for library items in no collection, used by a whole-library (`zotero:`) sync (default: `_unfiled`). Exclude these items with `ZOTERO_EXCLUDE=_unfiled`. |
 
 Text is taken from Zotero's indexed fulltext when available, falling back to extracting it
 from the PDF with PyMuPDF. Requires the extra: `pip install oikb[zotero]`.
@@ -193,6 +195,12 @@ the attachment, so enabling them costs one extra API call per attachment in `ver
 checksum mode (`content` mode already downloads everything). Change detection stays correct
 in both modes: editing a note or annotation, which bumps only its own version, still updates
 the file.
+
+A whole-library sync (`zotero:` with no hierarchy) also picks up items that are in no
+collection and places them under `ZOTERO_UNFILED_DIR` (default `_unfiled/`). Zotero's API
+has no "unfiled" query, so this fetches the library's top-level items once and keeps those
+with an empty `collections` list. A named hierarchy (e.g. `zotero:Research`) syncs only that
+subtree and never sweeps unfiled items.
 
 ## Filters
 
