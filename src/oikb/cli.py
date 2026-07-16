@@ -161,8 +161,15 @@ def _resolve_connector(source: str, branch: str | None = None, path: str | None 
         return SalesforceConnector()
 
     if source.startswith("bookstack:"):
-        from oikb.connectors.bookstack import BookStackConnector
-        return BookStackConnector()
+        from oikb.connectors.bookstack import BookStackConnector, parse_bookstack_source
+        parsed = parse_bookstack_source(source)
+        return BookStackConnector(
+            ids=parsed["ids"],
+            scope=parsed["scope"],
+            export_output=parsed["output"],
+            export_format=parsed["format"],
+            structure=parsed["structure"],
+        )
 
     if source.startswith("discourse:"):
         from oikb.connectors.discourse import DiscourseConnector, parse_discourse_source

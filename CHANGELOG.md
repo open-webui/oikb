@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **BookStack**: support configurable sync scope, export output, format, and flat or hierarchical structure.
+
 ## [0.3.6] - 2026-05-28
 
 ### Added

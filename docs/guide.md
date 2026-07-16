@@ -20,6 +20,7 @@ A complete guide to syncing content into Open WebUI Knowledge Bases.
   - [GitHub](#github)
   - [GitLab / Bitbucket](#gitlab--bitbucket)
   - [Confluence](#confluence)
+  - [BookStack](#bookstack)
   - [Cloud Storage (S3 / GCS / Azure)](#cloud-storage-s3--gcs--azure)
   - [SharePoint](#sharepoint)
   - [Nextcloud](#nextcloud)
@@ -249,6 +250,25 @@ oikb sync confluence:SPACE_KEY --kb-id your-kb-id
 ```
 
 Requires `CONFLUENCE_URL`, `CONFLUENCE_USERNAME`, and `CONFLUENCE_API_TOKEN`.
+
+### BookStack
+
+```bash
+oikb sync bookstack: --kb-id your-kb-id
+oikb sync 'bookstack:12?scope=pages' --kb-id your-kb-id
+oikb sync 'bookstack:12?scope=books&output=books&format=pdf' --kb-id your-kb-id
+oikb sync 'bookstack:5?scope=shelves&structure=hierarchical' --kb-id your-kb-id
+```
+
+Requires `BOOKSTACK_URL`, `BOOKSTACK_TOKEN_ID`, and `BOOKSTACK_TOKEN_SECRET`.
+Defaults are `scope=books`, `output=pages`, `format=md`, and `structure=flat`.
+
+| Parameter | Values | Description |
+|---|---|---|
+| `scope` | `pages`, `books`, `shelves` | Selects what the IDs refer to. |
+| `output` | `pages`, `books` | Exports individual pages or whole books. `scope=pages` always uses page output. |
+| `format` | `txt`, `md`, `html`, `pdf` | Exported file format. |
+| `structure` | `flat`, `hierarchical` | Keeps files flat or mirrors shelf/book/chapter paths where available. |
 
 ### Cloud Storage (S3 / GCS / Azure)
 
