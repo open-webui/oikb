@@ -7,6 +7,7 @@ import hmac
 import logging
 import os
 import signal
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -50,6 +51,7 @@ _history: SyncHistory | None = None
 _entries: list[dict] = []
 _shutdown_event: asyncio.Event | None = None
 _scheduler_task: asyncio.Task | None = None
+_sync_stop_event = threading.Event()
 
 
 # ── Interval / cron parser ───────────────────────────────────────
@@ -264,11 +266,12 @@ async def _run_entry(entry: dict, dry_run: bool = False) -> dict | None:
 async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
     """Inner sync logic, called under the per-KB lock."""
     from oikb.cli import _make_client, _resolve_connector
-    from oikb.sync import run_sync
+    from oikb.sync import SyncCancelled, run_sync
 
     source = entry["source"]
     kb_id = entry["kb-id"]
     started_at = time.time()
+    client = None
 
     _scheduler_state[source] = {
         **_scheduler_state.get(source, {}),
@@ -310,8 +313,8 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
             quiet=True,
             manifest_filter=mf,
             concurrency=entry.get("concurrency", 1),
+            should_stop=_sync_stop_event.is_set,
         )
-        client.close()
 
         if dry_run:
             return {
@@ -376,6 +379,16 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
             "errors": result.errors or [],
         })
 
+    except SyncCancelled:
+        _scheduler_state[source] = {
+            "name": entry.get("name", source),
+            "status": "cancelled",
+            "last_sync": time.time(),
+        }
+        log.info(f"Sync cancelled during shutdown: {source}")
+        if dry_run:
+            return {"cancelled": True}
+
     except Exception as e:
         _scheduler_state[source] = {
             "name": entry.get("name", source),
@@ -405,6 +418,10 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
             "status": "error",
             "error": str(e),
         })
+
+    finally:
+        if client:
+            client.close()
 
 
 async def _schedule_entry(entry: dict) -> None:
@@ -441,15 +458,22 @@ async def _schedule_entry(entry: dict) -> None:
             pass  # Time elapsed, run again.
 
 
+def _request_shutdown() -> None:
+    _sync_stop_event.set()
+    if _shutdown_event:
+        _shutdown_event.set()
+
+
 async def _run_scheduler(entries: list[dict], handle_signals: bool = False) -> None:
     """Start all sync tasks and wait for shutdown."""
     global _shutdown_event
+    _sync_stop_event.clear()
     _shutdown_event = asyncio.Event()
 
     if handle_signals:
         loop = asyncio.get_event_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, _shutdown_event.set)
+            loop.add_signal_handler(sig, _request_shutdown)
 
     tasks = [asyncio.create_task(_schedule_entry(e)) for e in entries]
 
@@ -505,10 +529,13 @@ def start_daemon(
 
         @app.on_event("shutdown")
         async def _shutdown():
-            if _shutdown_event:
-                _shutdown_event.set()
+            _request_shutdown()
             if _scheduler_task:
-                await _scheduler_task
+                try:
+                    await asyncio.wait_for(_scheduler_task, timeout=1)
+                except asyncio.TimeoutError:
+                    _scheduler_task.cancel()
+                    await asyncio.gather(_scheduler_task, return_exceptions=True)
 
         click.echo(f"oikb daemon listening on port {port}")
         click.echo(f"  {len(entries)} source(s) configured")
@@ -529,4 +556,5 @@ def start_daemon(
             host="0.0.0.0",
             port=port,
             log_level="warning",
+            timeout_graceful_shutdown=1,
         )
