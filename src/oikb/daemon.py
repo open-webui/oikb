@@ -49,6 +49,7 @@ _sync_locks: dict[str, asyncio.Lock] = {}
 _history: SyncHistory | None = None
 _entries: list[dict] = []
 _shutdown_event: asyncio.Event | None = None
+_scheduler_task: asyncio.Task | None = None
 
 
 # ── Interval / cron parser ───────────────────────────────────────
@@ -440,14 +441,15 @@ async def _schedule_entry(entry: dict) -> None:
             pass  # Time elapsed, run again.
 
 
-async def _run_scheduler(entries: list[dict]) -> None:
+async def _run_scheduler(entries: list[dict], handle_signals: bool = False) -> None:
     """Start all sync tasks and wait for shutdown."""
     global _shutdown_event
     _shutdown_event = asyncio.Event()
 
-    loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _shutdown_event.set)
+    if handle_signals:
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _shutdown_event.set)
 
     tasks = [asyncio.create_task(_schedule_entry(e)) for e in entries]
 
@@ -466,7 +468,7 @@ def start_daemon(
     log_format: str = "text",
 ) -> None:
     """Start the daemon with scheduler + optional HTTP server."""
-    global _history, _entries
+    global _history, _entries, _scheduler_task
 
     from oikb.logging import configure_logging
     configure_logging(log_format=log_format)
@@ -494,11 +496,19 @@ def start_daemon(
     webhook_entries = [e for e in entries if e.get("webhook")]
 
     if no_server:
-        asyncio.run(_run_scheduler(entries))
+        asyncio.run(_run_scheduler(entries, handle_signals=True))
     else:
         @app.on_event("startup")
         async def _startup():
-            asyncio.create_task(_run_scheduler(entries))
+            global _scheduler_task
+            _scheduler_task = asyncio.create_task(_run_scheduler(entries))
+
+        @app.on_event("shutdown")
+        async def _shutdown():
+            if _shutdown_event:
+                _shutdown_event.set()
+            if _scheduler_task:
+                await _scheduler_task
 
         click.echo(f"oikb daemon listening on port {port}")
         click.echo(f"  {len(entries)} source(s) configured")
