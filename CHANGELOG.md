@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **BookStack**: support configurable sync scope, export output, format, and flat or hierarchical structure.
+- **BookStack**: support scope paths, include/exclude ID filters, chapter/book/page export output, format selection, and flat or hierarchical structure.
 
 ## [0.3.6] - 2026-05-28
 
