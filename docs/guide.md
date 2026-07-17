@@ -254,10 +254,19 @@ Requires `CONFLUENCE_URL`, `CONFLUENCE_USERNAME`, and `CONFLUENCE_API_TOKEN`.
 ### BookStack
 
 ```bash
+# Sync all pages from all BookStack books as Markdown files.
 oikb sync bookstack: --kb-id your-kb-id
+
+# Sync one specific BookStack page.
 oikb sync 'bookstack:12?scope=pages' --kb-id your-kb-id
+
+# Sync one BookStack book as chapter files; pages outside chapters remain page files.
 oikb sync 'bookstack:12?scope=books&output=chapters' --kb-id your-kb-id
+
+# Sync one whole BookStack book as a PDF file.
 oikb sync 'bookstack:12?scope=books&output=books&format=pdf' --kb-id your-kb-id
+
+# Sync all pages from one shelf and preserve shelf/book/chapter paths.
 oikb sync 'bookstack:5?scope=shelves&structure=hierarchical' --kb-id your-kb-id
 ```
 
