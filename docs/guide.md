@@ -256,6 +256,7 @@ Requires `CONFLUENCE_URL`, `CONFLUENCE_USERNAME`, and `CONFLUENCE_API_TOKEN`.
 ```bash
 oikb sync bookstack: --kb-id your-kb-id
 oikb sync 'bookstack:12?scope=pages' --kb-id your-kb-id
+oikb sync 'bookstack:12?scope=books&output=chapters' --kb-id your-kb-id
 oikb sync 'bookstack:12?scope=books&output=books&format=pdf' --kb-id your-kb-id
 oikb sync 'bookstack:5?scope=shelves&structure=hierarchical' --kb-id your-kb-id
 ```
@@ -266,9 +267,13 @@ Defaults are `scope=books`, `output=pages`, `format=md`, and `structure=flat`.
 | Parameter | Values | Description |
 |---|---|---|
 | `scope` | `pages`, `books`, `shelves` | Selects what the IDs refer to. |
-| `output` | `pages`, `books` | Exports individual pages or whole books. `scope=pages` always uses page output. |
+| `output` | `pages`, `chapters`, `books` | Exports individual pages, chapters where pages are grouped in chapters, or whole books. |
 | `format` | `txt`, `md`, `html`, `pdf` | Exported file format. |
 | `structure` | `flat`, `hierarchical` | Keeps files flat or mirrors shelf/book/chapter paths where available. |
+
+When `scope=pages` is used, `output` is always treated as `pages`.
+
+With `output=chapters`, pages outside chapters remain individual page exports.
 
 ### Cloud Storage (S3 / GCS / Azure)
 

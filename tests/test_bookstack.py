@@ -33,13 +33,23 @@ def test_parse_bookstack_pages_books_fallback():
     assert parsed["output"] == "pages"
 
 
+def test_parse_bookstack_accepts_chapter_output():
+    parsed = parse_bookstack_source("bookstack:12?scope=books&output=chapters")
+    assert parsed["output"] == "chapters"
+
+
+def test_parse_bookstack_pages_chapters_fallback():
+    parsed = parse_bookstack_source("bookstack:12?scope=pages&output=chapters")
+    assert parsed["output"] == "pages"
+
+
 @pytest.mark.parametrize(
     "source",
     [
         "bookstack:abc",
         "bookstack:12,,34",
         "bookstack:?scope=book",
-        "bookstack:?output=chapters",
+        "bookstack:?output=chapter",
         "bookstack:?format=markdown",
         "bookstack:?format=zip",
         "bookstack:?structure=nested",
@@ -190,6 +200,138 @@ def test_book_output_checksum_includes_nested_page_updates():
 
     old_connector = _connector(ids=["12"], export_output="books")
     new_connector = _connector(ids=["12"], export_output="books")
+    old_connector._http = old_http
+    new_connector._http = new_http
+    try:
+        old_checksum = old_connector.build_manifest()[0].checksum
+        new_checksum = new_connector.build_manifest()[0].checksum
+    finally:
+        old_connector.close()
+        new_connector.close()
+
+    assert old_checksum != new_checksum
+
+
+def test_chapter_output_uses_book_contents_and_keeps_standalone_pages():
+    http = FakeHTTP({
+        "/api/books/12": Response(
+            200,
+            json={
+                "id": 12,
+                "name": "Guide",
+                "updated_at": "2026-01-01",
+                "contents": [
+                    {
+                        "id": 7,
+                        "type": "chapter",
+                        "name": "Setup",
+                        "updated_at": "2026-01-02",
+                        "pages": [
+                            {"id": 99, "updated_at": "2026-01-03"},
+                            {"id": 100, "updated_at": "2026-01-04"},
+                        ],
+                    },
+                    {"id": 8, "type": "chapter", "name": "Empty", "pages": []},
+                    {
+                        "id": 101,
+                        "type": "page",
+                        "book_id": 12,
+                        "chapter_id": None,
+                        "name": "Standalone",
+                        "updated_at": "2026-01-05",
+                    },
+                ],
+            },
+        ),
+        "/api/chapters/7/export/markdown": Response(200, content=b"# Setup"),
+        "/api/pages/101/export/markdown": Response(200, content=b"# Standalone"),
+    })
+
+    connector = _connector(ids=["12"], export_output="chapters")
+    connector._http = http
+    try:
+        manifest = connector.build_manifest()
+        contents = {entry.filename: connector.read_file(entry.path, entry.filename) for entry in manifest}
+    finally:
+        connector.close()
+
+    assert [entry.filename for entry in manifest] == ["101_Standalone.md", "7_Setup.md"]
+    assert contents == {"7_Setup.md": b"# Setup", "101_Standalone.md": b"# Standalone"}
+    assert ("/api/chapters/7/export/markdown", {}) in http.calls
+    assert ("/api/pages/101/export/markdown", {}) in http.calls
+
+
+def test_shelf_chapter_output_uses_shelf_and_book_path():
+    http = FakeHTTP({
+        "/api/shelves/5": Response(
+            200,
+            json={"id": 5, "name": "Knowledge", "books": [{"id": 12, "name": "Guide"}]},
+        ),
+        "/api/books/12": Response(
+            200,
+            json={
+                "id": 12,
+                "name": "Guide",
+                "contents": [
+                    {"id": 7, "type": "chapter", "name": "Setup", "updated_at": "2026-01-02", "pages": [{"id": 99}]},
+                    {
+                        "id": 101,
+                        "type": "page",
+                        "book_id": 12,
+                        "chapter_id": None,
+                        "name": "Standalone",
+                        "updated_at": "2026-01-05",
+                    },
+                ],
+            },
+        ),
+    })
+
+    connector = _connector(ids=["5"], scope="shelves", export_output="chapters", structure="hierarchical")
+    connector._http = http
+    try:
+        manifest = connector.build_manifest()
+    finally:
+        connector.close()
+
+    assert [(entry.path, entry.filename) for entry in manifest] == [
+        ("Knowledge/Guide", "101_Standalone.md"),
+        ("Knowledge/Guide", "7_Setup.md"),
+    ]
+
+
+def test_chapter_output_checksum_includes_nested_page_updates():
+    old_book = {
+        "id": 12,
+        "name": "Guide",
+        "contents": [
+            {
+                "id": 7,
+                "type": "chapter",
+                "name": "Setup",
+                "updated_at": "2026-01-01",
+                "pages": [{"id": 99, "updated_at": "2026-01-02"}],
+            }
+        ],
+    }
+    new_book = {
+        **old_book,
+        "contents": [
+            {
+                "id": 7,
+                "type": "chapter",
+                "name": "Setup",
+                "updated_at": "2026-01-01",
+                "pages": [{"id": 99, "updated_at": "2026-02-01"}],
+            }
+        ],
+    }
+
+    old_http = FakeHTTP({"/api/books/12": Response(200, json=old_book)})
+    new_http = FakeHTTP({"/api/books/12": Response(200, json=new_book)})
+
+    old_connector = _connector(ids=["12"], export_output="chapters")
+    new_connector = _connector(ids=["12"], export_output="chapters")
     old_connector._http = old_http
     new_connector._http = new_http
     try:

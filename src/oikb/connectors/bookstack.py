@@ -29,7 +29,7 @@ FORMAT_EXT = {
 }
 
 SCOPES = {"pages", "books", "shelves"}
-OUTPUTS = {"pages", "books"}
+OUTPUTS = {"pages", "chapters", "books"}
 STRUCTURES = {"flat", "hierarchical"}
 PARAMS = {"scope", "output", "format", "structure"}
 
@@ -68,6 +68,8 @@ class BookStackConnector(BaseConnector):
             entries = self._build_pages_scope_manifest()
         elif self.scope == "books" and self.export_output == "books":
             entries = self._build_books_manifest(self._selected_books())
+        elif self.scope == "books" and self.export_output == "chapters":
+            entries = self._build_chapters_manifest(self._selected_books())
         elif self.scope == "books":
             entries = self._build_pages_from_books(self._selected_books())
         else:
@@ -101,6 +103,17 @@ class BookStackConnector(BaseConnector):
             entries.append(self._book_entry(self._get_book(str(book["id"])), shelf_name=shelf_name))
         return entries
 
+    def _build_chapters_manifest(self, books: list[dict], shelf_name: str | None = None) -> list[ManifestEntry]:
+        entries: list[ManifestEntry] = []
+        for book in books:
+            full_book = self._get_book(str(book["id"]))
+            for item in full_book.get("contents", []) or []:
+                if item.get("type") == "chapter" and item.get("pages"):
+                    entries.append(self._chapter_entry(item, full_book, shelf_name=shelf_name))
+                elif item.get("type") == "page":
+                    entries.append(self._page_entry(item, shelf_name=shelf_name))
+        return entries
+
     def _build_shelves_manifest(self) -> list[ManifestEntry]:
         entries: list[ManifestEntry] = []
         if self.ids:
@@ -120,6 +133,8 @@ class BookStackConnector(BaseConnector):
                 books.append(book)
             if self.export_output == "books":
                 entries.extend(self._build_books_manifest(books, shelf_name=shelf_name))
+            elif self.export_output == "chapters":
+                entries.extend(self._build_chapters_manifest(books, shelf_name=shelf_name))
             else:
                 entries.extend(self._build_pages_from_books(books, shelf_name=shelf_name))
         return entries
@@ -147,6 +162,15 @@ class BookStackConnector(BaseConnector):
         self._cache[self._entry_key(path, filename)] = ("books", book_id)
         return ManifestEntry(filename=filename, path=path, checksum=checksum, size=0)
 
+    def _chapter_entry(self, chapter: dict, book: dict, shelf_name: str | None = None) -> ManifestEntry:
+        chapter_id = str(chapter["id"])
+        title = self._safe_name(chapter.get("name", "Untitled"))
+        filename = f"{chapter_id}_{title[:80]}{FORMAT_EXT[self.export_format]}"
+        path = self._chapter_path(book, shelf_name=shelf_name)
+        checksum = self._chapter_checksum(chapter)
+        self._cache[self._entry_key(path, filename)] = ("chapters", chapter_id)
+        return ManifestEntry(filename=filename, path=path, checksum=checksum, size=0)
+
     def _page_path(self, page: dict, shelf_name: str | None = None) -> str:
         if self.structure != "hierarchical":
             return ""
@@ -159,6 +183,15 @@ class BookStackConnector(BaseConnector):
         chapter_id = page.get("chapter_id")
         if chapter_id:
             parts.append(self._get_chapter(str(chapter_id)).get("name", "Untitled"))
+        return "/".join(self._safe_name(part) for part in parts if part)
+
+    def _chapter_path(self, book: dict, shelf_name: str | None = None) -> str:
+        if self.structure != "hierarchical":
+            return ""
+        parts = []
+        if shelf_name:
+            parts.append(shelf_name)
+        parts.append(book.get("name", "Untitled"))
         return "/".join(self._safe_name(part) for part in parts if part)
 
     def _get_page(self, page_id: str) -> dict:
@@ -231,6 +264,14 @@ class BookStackConnector(BaseConnector):
                     updates.append(str(page["updated_at"]))
         return self._checksum("book", book_id, ":".join(updates))
 
+    def _chapter_checksum(self, chapter: dict) -> str:
+        chapter_id = str(chapter["id"])
+        updates = [str(chapter.get("updated_at") or "")]
+        for page in chapter.get("pages", []) or []:
+            if page.get("updated_at"):
+                updates.append(str(page["updated_at"]))
+        return self._checksum("chapter", chapter_id, ":".join(updates))
+
     @staticmethod
     def _safe_name(name: str | None) -> str:
         safe = re.sub(r'[<>:"/\\|?*]', "_", name or "Untitled").strip()
@@ -264,13 +305,13 @@ def parse_bookstack_source(source: str) -> dict:
     if result["scope"] not in SCOPES:
         raise ValueError("Invalid BookStack source. Expected scope=pages, scope=books, or scope=shelves")
     if result["output"] not in OUTPUTS:
-        raise ValueError("Invalid BookStack source. Expected output=pages or output=books")
+        raise ValueError("Invalid BookStack source. Expected output=pages, output=chapters, or output=books")
     if result["format"] not in FORMAT_EXPORT:
         raise ValueError("Invalid BookStack source. Expected format=txt, format=md, format=html, or format=pdf")
     if result["structure"] not in STRUCTURES:
         raise ValueError("Invalid BookStack source. Expected structure=flat or structure=hierarchical")
 
-    if result["scope"] == "pages" and result["output"] == "books":
+    if result["scope"] == "pages" and result["output"] in {"books", "chapters"}:
         result["output"] = "pages"
 
     return result
