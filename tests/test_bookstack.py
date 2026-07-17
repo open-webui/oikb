@@ -6,7 +6,8 @@ from oikb.connectors.bookstack import BookStackConnector, parse_bookstack_source
 
 def test_parse_bookstack_defaults():
     assert parse_bookstack_source("bookstack:") == {
-        "ids": [],
+        "include_ids": [],
+        "exclude_ids": [],
         "scope": "books",
         "output": "pages",
         "format": "md",
@@ -15,8 +16,9 @@ def test_parse_bookstack_defaults():
 
 
 def test_parse_bookstack_ids_and_options():
-    assert parse_bookstack_source("bookstack:12,34?scope=shelves&output=books&format=pdf&structure=hierarchical") == {
-        "ids": ["12", "34"],
+    assert parse_bookstack_source("bookstack:shelves?include_ids=12,34&output=books&format=pdf&structure=hierarchical") == {
+        "include_ids": ["12", "34"],
+        "exclude_ids": [],
         "scope": "shelves",
         "output": "books",
         "format": "pdf",
@@ -25,21 +27,27 @@ def test_parse_bookstack_ids_and_options():
 
 
 def test_parse_bookstack_deduplicates_ids():
-    assert parse_bookstack_source("bookstack:12,12,34")["ids"] == ["12", "34"]
+    assert parse_bookstack_source("bookstack:books?include_ids=12,12,34")["include_ids"] == ["12", "34"]
+
+
+def test_parse_bookstack_defaults_to_books_with_include_ids():
+    parsed = parse_bookstack_source("bookstack:?include_ids=12")
+    assert parsed["scope"] == "books"
+    assert parsed["include_ids"] == ["12"]
 
 
 def test_parse_bookstack_pages_books_fallback():
-    parsed = parse_bookstack_source("bookstack:12?scope=pages&output=books")
+    parsed = parse_bookstack_source("bookstack:pages?output=books")
     assert parsed["output"] == "pages"
 
 
 def test_parse_bookstack_accepts_chapter_output():
-    parsed = parse_bookstack_source("bookstack:12?scope=books&output=chapters")
+    parsed = parse_bookstack_source("bookstack:books?output=chapters")
     assert parsed["output"] == "chapters"
 
 
 def test_parse_bookstack_pages_chapters_fallback():
-    parsed = parse_bookstack_source("bookstack:12?scope=pages&output=chapters")
+    parsed = parse_bookstack_source("bookstack:pages?output=chapters")
     assert parsed["output"] == "pages"
 
 
@@ -47,8 +55,13 @@ def test_parse_bookstack_pages_chapters_fallback():
     "source",
     [
         "bookstack:abc",
-        "bookstack:12,,34",
-        "bookstack:?scope=book",
+        "bookstack:12",
+        "bookstack:books?include_ids=",
+        "bookstack:books?exclude_ids=",
+        "bookstack:books?include_ids=abc",
+        "bookstack:books?include_ids=12,,34",
+        "bookstack:books?include_ids=12&exclude_ids=34",
+        "bookstack:?scope=books",
         "bookstack:?output=chapter",
         "bookstack:?format=markdown",
         "bookstack:?format=zip",
@@ -85,13 +98,38 @@ def test_default_manifest_lists_books_then_pages_as_markdown():
     assert http.calls[2][0] == "/api/pages/99/export/markdown"
 
 
+def test_books_scope_excludes_ids():
+    http = FakeHTTP({
+        "/api/books": Response(
+            200,
+            json={
+                "data": [
+                    {"id": 12, "name": "Guide", "updated_at": "2026-01-01"},
+                    {"id": 13, "name": "Handbook", "updated_at": "2026-01-01"},
+                ]
+            },
+        ),
+        "/api/pages": Response(200, json={"data": [{"id": 99, "book_id": 13, "name": "Install", "updated_at": "2026-01-02"}]}),
+    })
+
+    connector = _connector(exclude_ids=["12"])
+    connector._http = http
+    try:
+        manifest = connector.build_manifest()
+    finally:
+        connector.close()
+
+    assert manifest[0].filename == "99_Install.md"
+    assert http.calls[1] == ("/api/pages", {"count": 100, "offset": 0, "filter[book_id]": "13"})
+
+
 def test_pages_scope_with_ids_reads_pages_directly_as_plaintext():
     http = FakeHTTP({
         "/api/pages/99": Response(200, json={"id": 99, "name": "Install", "updated_at": "2026-01-02"}),
         "/api/pages/99/export/plaintext": Response(200, content=b"Install"),
     })
 
-    connector = _connector(ids=["99"], scope="pages", export_format="txt")
+    connector = _connector(include_ids=["99"], scope="pages", export_format="txt")
     connector._http = http
     try:
         manifest = connector.build_manifest()
@@ -110,7 +148,7 @@ def test_books_scope_outputs_books_as_pdf():
         "/api/books/12/export/pdf": Response(200, content=b"%PDF"),
     })
 
-    connector = _connector(ids=["12"], export_output="books", export_format="pdf", structure="hierarchical")
+    connector = _connector(include_ids=["12"], export_output="books", export_format="pdf", structure="hierarchical")
     connector._http = http
     try:
         manifest = connector.build_manifest()
@@ -131,7 +169,7 @@ def test_hierarchical_pages_use_book_and_chapter_paths():
         "/api/chapters/7": Response(200, json={"id": 7, "name": "Setup"}),
     })
 
-    connector = _connector(ids=["12"], structure="hierarchical")
+    connector = _connector(include_ids=["12"], structure="hierarchical")
     connector._http = http
     try:
         manifest = connector.build_manifest()
@@ -157,7 +195,7 @@ def test_shelves_dedupe_books_and_use_shelf_path_for_book_output():
         "/api/books/12": Response(200, json={"id": 12, "name": "Guide", "updated_at": "2026-01-01"}),
     })
 
-    connector = _connector(ids=["5"], scope="shelves", export_output="books", structure="hierarchical")
+    connector = _connector(include_ids=["5"], scope="shelves", export_output="books", structure="hierarchical")
     connector._http = http
     try:
         manifest = connector.build_manifest()
@@ -198,8 +236,8 @@ def test_book_output_checksum_includes_nested_page_updates():
     old_http = FakeHTTP({"/api/books/12": Response(200, json=old_book)})
     new_http = FakeHTTP({"/api/books/12": Response(200, json=new_book)})
 
-    old_connector = _connector(ids=["12"], export_output="books")
-    new_connector = _connector(ids=["12"], export_output="books")
+    old_connector = _connector(include_ids=["12"], export_output="books")
+    new_connector = _connector(include_ids=["12"], export_output="books")
     old_connector._http = old_http
     new_connector._http = new_http
     try:
@@ -247,7 +285,7 @@ def test_chapter_output_uses_book_contents_and_keeps_standalone_pages():
         "/api/pages/101/export/markdown": Response(200, content=b"# Standalone"),
     })
 
-    connector = _connector(ids=["12"], export_output="chapters")
+    connector = _connector(include_ids=["12"], export_output="chapters")
     connector._http = http
     try:
         manifest = connector.build_manifest()
@@ -287,7 +325,7 @@ def test_shelf_chapter_output_uses_shelf_and_book_path():
         ),
     })
 
-    connector = _connector(ids=["5"], scope="shelves", export_output="chapters", structure="hierarchical")
+    connector = _connector(include_ids=["5"], scope="shelves", export_output="chapters", structure="hierarchical")
     connector._http = http
     try:
         manifest = connector.build_manifest()
@@ -330,8 +368,8 @@ def test_chapter_output_checksum_includes_nested_page_updates():
     old_http = FakeHTTP({"/api/books/12": Response(200, json=old_book)})
     new_http = FakeHTTP({"/api/books/12": Response(200, json=new_book)})
 
-    old_connector = _connector(ids=["12"], export_output="chapters")
-    new_connector = _connector(ids=["12"], export_output="chapters")
+    old_connector = _connector(include_ids=["12"], export_output="chapters")
+    new_connector = _connector(include_ids=["12"], export_output="chapters")
     old_connector._http = old_http
     new_connector._http = new_http
     try:
@@ -349,7 +387,7 @@ def test_shelf_without_books_returns_empty_manifest():
         "/api/shelves/5": Response(200, json={"id": 5, "name": "Empty", "books": []}),
     })
 
-    connector = _connector(ids=["5"], scope="shelves", export_output="books")
+    connector = _connector(include_ids=["5"], scope="shelves", export_output="books")
     connector._http = http
     try:
         manifest = connector.build_manifest()
@@ -391,7 +429,7 @@ def test_shelves_scope_outputs_hierarchical_pages():
         "/api/chapters/7": Response(200, json={"id": 7, "name": "Setup"}),
     })
 
-    connector = _connector(ids=["5"], scope="shelves", structure="hierarchical")
+    connector = _connector(include_ids=["5"], scope="shelves", structure="hierarchical")
     connector._http = http
     try:
         manifest = connector.build_manifest()
@@ -440,7 +478,7 @@ def test_format_mapping_for_book_exports(fmt, extension, export_name):
         f"/api/books/12/export/{export_name}": Response(200, content=b"content"),
     })
 
-    connector = _connector(ids=["12"], export_output="books", export_format=fmt)
+    connector = _connector(include_ids=["12"], export_output="books", export_format=fmt)
     connector._http = http
     try:
         manifest = connector.build_manifest()

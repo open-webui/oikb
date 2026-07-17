@@ -164,7 +164,8 @@ def _resolve_connector(source: str, branch: str | None = None, path: str | None 
         from oikb.connectors.bookstack import BookStackConnector, parse_bookstack_source
         parsed = parse_bookstack_source(source)
         return BookStackConnector(
-            ids=parsed["ids"],
+            include_ids=parsed["include_ids"],
+            exclude_ids=parsed["exclude_ids"],
             scope=parsed["scope"],
             export_output=parsed["output"],
             export_format=parsed["format"],

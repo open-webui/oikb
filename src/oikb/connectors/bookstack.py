@@ -31,7 +31,7 @@ FORMAT_EXT = {
 SCOPES = {"pages", "books", "shelves"}
 OUTPUTS = {"pages", "chapters", "books"}
 STRUCTURES = {"flat", "hierarchical"}
-PARAMS = {"scope", "output", "format", "structure"}
+PARAMS = {"include_ids", "exclude_ids", "output", "format", "structure"}
 
 
 class BookStackConnector(BaseConnector):
@@ -42,7 +42,8 @@ class BookStackConnector(BaseConnector):
         base_url: str | None = None,
         token_id: str | None = None,
         token_secret: str | None = None,
-        ids: list[str] | None = None,
+        include_ids: list[str] | None = None,
+        exclude_ids: list[str] | None = None,
         scope: str = "books",
         export_output: str = "pages",
         export_format: str = "md",
@@ -54,7 +55,8 @@ class BookStackConnector(BaseConnector):
         if not self._url or not tid or not ts:
             raise ValueError("BookStack credentials required. Set BOOKSTACK_URL, BOOKSTACK_TOKEN_ID, BOOKSTACK_TOKEN_SECRET.")
         self._http = httpx.Client(base_url=self._url, headers={"Authorization": f"Token {tid}:{ts}"}, timeout=30.0)
-        self.ids = ids or []
+        self.include_ids = include_ids or []
+        self.exclude_ids = set(exclude_ids or [])
         self.scope = scope
         self.export_output = export_output
         self.export_format = export_format
@@ -79,11 +81,13 @@ class BookStackConnector(BaseConnector):
 
     def _build_pages_scope_manifest(self) -> list[ManifestEntry]:
         entries: list[ManifestEntry] = []
-        if self.ids:
-            pages = [self._get_page(page_id) for page_id in self.ids]
+        if self.include_ids:
+            pages = [self._get_page(page_id) for page_id in self.include_ids]
         else:
             pages = self._list_paginated("/api/pages")
         for page in pages:
+            if self._is_excluded(page):
+                continue
             entries.append(self._page_entry(page))
         return entries
 
@@ -116,13 +120,15 @@ class BookStackConnector(BaseConnector):
 
     def _build_shelves_manifest(self) -> list[ManifestEntry]:
         entries: list[ManifestEntry] = []
-        if self.ids:
-            shelves = [self._get_shelf(shelf_id) for shelf_id in self.ids]
+        if self.include_ids:
+            shelves = [self._get_shelf(shelf_id) for shelf_id in self.include_ids]
         else:
             shelves = [self._get_shelf(str(shelf["id"])) for shelf in self._list_paginated("/api/shelves")]
         # A book can appear on multiple shelves; export it only once.
         seen_books: set[str] = set()
         for shelf in shelves:
+            if self._is_excluded(shelf):
+                continue
             shelf_name = shelf.get("name", "Untitled") if self.structure == "hierarchical" else None
             books = []
             for book in shelf.get("books", []):
@@ -140,9 +146,14 @@ class BookStackConnector(BaseConnector):
         return entries
 
     def _selected_books(self) -> list[dict]:
-        if self.ids:
-            return [self._get_book(book_id) for book_id in self.ids]
-        return self._list_paginated("/api/books")
+        if self.include_ids:
+            books = [self._get_book(book_id) for book_id in self.include_ids]
+        else:
+            books = self._list_paginated("/api/books")
+        return [book for book in books if not self._is_excluded(book)]
+
+    def _is_excluded(self, item: dict) -> bool:
+        return str(item["id"]) in self.exclude_ids
 
     def _page_entry(self, page: dict, shelf_name: str | None = None) -> ManifestEntry:
         page_id = str(page["id"])
@@ -284,10 +295,11 @@ class BookStackConnector(BaseConnector):
 
 def parse_bookstack_source(source: str) -> dict:
     raw = source.removeprefix("bookstack:")
-    id_part, sep, query = raw.partition("?")
+    scope_part, sep, query = raw.partition("?")
     result = {
-        "ids": _parse_ids(id_part),
-        "scope": "books",
+        "include_ids": [],
+        "exclude_ids": [],
+        "scope": scope_part or "books",
         "output": "pages",
         "format": "md",
         "structure": "flat",
@@ -300,10 +312,15 @@ def parse_bookstack_source(source: str) -> dict:
         seen.add(key)
         if key not in PARAMS:
             raise ValueError(f"Invalid BookStack source. Unknown parameter: {key}")
-        result[key] = value
+        if key in {"include_ids", "exclude_ids"}:
+            result[key] = _parse_ids(value)
+        else:
+            result[key] = value
 
     if result["scope"] not in SCOPES:
-        raise ValueError("Invalid BookStack source. Expected scope=pages, scope=books, or scope=shelves")
+        raise ValueError("Invalid BookStack source. Expected bookstack:, bookstack:pages, bookstack:books, or bookstack:shelves")
+    if result["include_ids"] and result["exclude_ids"]:
+        raise ValueError("Invalid BookStack source. include_ids and exclude_ids cannot be used together")
     if result["output"] not in OUTPUTS:
         raise ValueError("Invalid BookStack source. Expected output=pages, output=chapters, or output=books")
     if result["format"] not in FORMAT_EXPORT:
@@ -319,8 +336,8 @@ def parse_bookstack_source(source: str) -> dict:
 
 def _parse_ids(raw: str) -> list[str]:
     if not raw:
-        return []
+        raise ValueError("Invalid BookStack source. Expected positive numeric IDs, e.g. include_ids=12,34")
     parts = raw.split(",")
     if any(not part or not part.isdecimal() or int(part) <= 0 for part in parts):
-        raise ValueError("Invalid BookStack source. Expected positive numeric IDs, e.g. bookstack:12,34")
+        raise ValueError("Invalid BookStack source. Expected positive numeric IDs, e.g. include_ids=12,34")
     return list(dict.fromkeys(parts))

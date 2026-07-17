@@ -258,29 +258,32 @@ Requires `CONFLUENCE_URL`, `CONFLUENCE_USERNAME`, and `CONFLUENCE_API_TOKEN`.
 oikb sync bookstack: --kb-id your-kb-id
 
 # Sync one specific BookStack page.
-oikb sync 'bookstack:12?scope=pages' --kb-id your-kb-id
+oikb sync 'bookstack:pages?include_ids=12' --kb-id your-kb-id
 
 # Sync one BookStack book as chapter files; pages outside chapters remain page files.
-oikb sync 'bookstack:12?scope=books&output=chapters' --kb-id your-kb-id
+oikb sync 'bookstack:books?include_ids=12&output=chapters' --kb-id your-kb-id
 
 # Sync one whole BookStack book as a PDF file.
-oikb sync 'bookstack:12?scope=books&output=books&format=pdf' --kb-id your-kb-id
+oikb sync 'bookstack:books?include_ids=12&output=books&format=pdf' --kb-id your-kb-id
 
 # Sync all pages from one shelf and preserve shelf/book/chapter paths.
-oikb sync 'bookstack:5?scope=shelves&structure=hierarchical' --kb-id your-kb-id
+oikb sync 'bookstack:shelves?include_ids=5&structure=hierarchical' --kb-id your-kb-id
 ```
 
 Requires `BOOKSTACK_URL`, `BOOKSTACK_TOKEN_ID`, and `BOOKSTACK_TOKEN_SECRET`.
-Defaults are `scope=books`, `output=pages`, `format=md`, and `structure=flat`.
+Defaults are `bookstack:books`, `output=pages`, `format=md`, and `structure=flat`.
+
+Use `bookstack:pages`, `bookstack:books`, or `bookstack:shelves` to select what IDs refer to. `bookstack:` defaults to `bookstack:books`.
 
 | Parameter | Values | Description |
 |---|---|---|
-| `scope` | `pages`, `books`, `shelves` | Selects what the IDs refer to. |
 | `output` | `pages`, `chapters`, `books` | Exports individual pages, chapters where pages are grouped in chapters, or whole books. |
 | `format` | `txt`, `md`, `html`, `pdf` | Exported file format. |
 | `structure` | `flat`, `hierarchical` | Keeps files flat or mirrors shelf/book/chapter paths where available. |
+| `include_ids` | comma-separated IDs | Limits the selected pages, books, or shelves. |
+| `exclude_ids` | comma-separated IDs | Excludes selected pages, books, or shelves. |
 
-When `scope=pages` is used, `output` is always treated as `pages`.
+When `bookstack:pages` is used, `output` is always treated as `pages`.
 
 With `output=chapters`, pages outside chapters remain individual page exports.
 
