@@ -15,7 +15,7 @@ services:
       - OIKB_API_KEY=${OIKB_API_KEY}
       - LOG_FORMAT=json
     volumes:
-      - ./.oikb.yaml:/app/.oikb.yaml:ro
+      - ./.oikb.yaml:/data/.oikb.yaml:ro
     command: daemon
     ports:
       - "8080:8080"

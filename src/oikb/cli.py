@@ -985,7 +985,7 @@ def daemon(port: int, no_server: bool, config_file: str | None, log_format: str 
         entries = _load_oikb_yaml()
 
     if not entries:
-        click.echo(click.style("No sync entries found. Create a .oikb.yaml file.", fg="red"), err=True)
+        click.echo(click.style("No sync entries found. Create a .oikb.yaml file at {yaml_path}.", fg="red"), err=True)
         sys.exit(1)
 
     # Validate entries.
