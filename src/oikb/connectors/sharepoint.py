@@ -133,7 +133,7 @@ class SharePointConnector(BaseConnector):
 
     def read_file(self, path: str, filename: str) -> bytes:
         file_path = f"{path}/{filename}" if path else filename
-        resp = self._http.get(f"/drives/{self._drive_id}/root:/{file_path}:/content")
+        resp = self._http.get(f"/drives/{self._drive_id}/root:/{file_path}:/content", follow_redirects=True)
         resp.raise_for_status()
         return resp.content
 
