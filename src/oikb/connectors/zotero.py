@@ -57,7 +57,14 @@ class ZoteroConnector(BaseConnector):
             ) from exc
 
         library_id = library_id or os.environ.get("ZOTERO_LIBRARY_ID", "")
-        api_key = api_key or os.environ.get("ZOTERO_API_KEY", "")
+        # Per-library env vars (e.g. ZOTERO_API_KEY_123456) allow multiple Zotero
+        # libraries to be synced from a single daemon when the library_id is
+        # embedded in the source string ("zotero:123456:Collection%%Sub").
+        api_key = (
+            api_key
+            or (os.environ.get(f"ZOTERO_API_KEY_{library_id}") if library_id else None)
+            or os.environ.get("ZOTERO_API_KEY", "")
+        )
         if not library_id or not api_key:
             raise ValueError(
                 "Zotero credentials required. Set ZOTERO_LIBRARY_ID and ZOTERO_API_KEY."
@@ -66,7 +73,9 @@ class ZoteroConnector(BaseConnector):
         self.hierarchy = hierarchy
         self._zot = zotero.Zotero(
             library_id,
-            library_type or os.environ.get("ZOTERO_LIBRARY_TYPE", "user"),
+            library_type
+            or (os.environ.get(f"ZOTERO_LIBRARY_TYPE_{library_id}") if library_id else None)
+            or os.environ.get("ZOTERO_LIBRARY_TYPE", "user"),
             api_key,
         )
         self.include_notes = os.environ.get("ZOTERO_INCLUDE_NOTES", "").strip().lower() in {
@@ -387,5 +396,16 @@ class ZoteroConnector(BaseConnector):
 
 
 def parse_zotero_source(source: str) -> dict[str, str | None]:
-    hierarchy = source.removeprefix("zotero:")
-    return {"hierarchy": None if hierarchy in {"", "*"} else hierarchy}
+    rest = source.removeprefix("zotero:")
+    library_id: str | None = None
+    # Optional library ID prefix: "zotero:123456:Collection%%Sub". A numeric
+    # segment before the first colon is treated as the library ID, allowing
+    # multiple Zotero libraries in a single .oikb.yaml. Plain collection paths
+    # (e.g. "zotero:Research%%ML") are unchanged — collection names are not
+    # purely numeric, so there is no ambiguity.
+    if ":" in rest:
+        head, tail = rest.split(":", 1)
+        if head.isdigit():
+            library_id = head
+            rest = tail
+    return {"hierarchy": None if rest in {"", "*"} else rest, "library_id": library_id}
