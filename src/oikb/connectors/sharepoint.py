@@ -30,6 +30,7 @@ class SharePointConnector(BaseConnector):
     def __init__(
         self,
         site: str,
+        site_path: str = "",
         library: str = "Documents",
         tenant_id: str | None = None,
         client_id: str | None = None,
@@ -38,6 +39,7 @@ class SharePointConnector(BaseConnector):
         certificate_password: str | None = None,
     ):
         self.site = site
+        self.site_path = site_path.strip("/")
         self.library = library
 
         tid = tenant_id or os.environ.get("SHAREPOINT_TENANT_ID", "")
@@ -90,7 +92,8 @@ class SharePointConnector(BaseConnector):
         )
 
         # Resolve site ID.
-        site_resp = self._http.get(f"/sites/{self.site}")
+        site_identifier = f"{self.site}:/{self.site_path}" if self.site_path else self.site
+        site_resp = self._http.get(f"/sites/{site_identifier}")
         site_resp.raise_for_status()
         self._site_id = site_resp.json()["id"]
 
