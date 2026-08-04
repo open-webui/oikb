@@ -240,13 +240,59 @@ def _get_token_via_certificate(
 
 # ── Source parser ───────────────────────────────────────────────
 
+_SITE_PATH_PREFIXES = ("sites", "teams")
+_SEPARATOR = "::"
 
-def parse_sharepoint_source(source: str) -> dict[str, str | None]:
-    """Parse sharepoint:site/library or sharepoint:site."""
+def parse_sharepoint_source(source: str) -> dict[str, str]:
+    """Parse a SharePoint source string. Supports:
+      sharepoint:<hostname>/<library>
+      sharepoint:<hostname>/sites/<site_name>/<library>
+      sharepoint:<hostname>/sites/<site_name>/<subsite>::<library>   (subsites)
+
+    The "::" separator is required whenever the site path has more than one
+    segment after sites/<name> — otherwise there's no way to tell a subsite
+    apart from a library name.
+
+    Examples:
+      sharepoint:mycompany.sharepoint.us/Documents
+      sharepoint:mycompany.sharepoint.us/sites/TeamSite/Documents
+      sharepoint:mycompany.sharepoint.us/sites/TeamSite/SubSite::Documents
+    """
     source = source.removeprefix("sharepoint:")
-    parts = source.split("/", 1)
-    site = parts[0]
-    library = parts[1] if len(parts) > 1 else "Documents"
-    if not site:
-        raise ValueError("Invalid SharePoint source. Expected: sharepoint:<site>[/library]")
-    return {"site": site, "library": library}
+    host, _, rest = source.partition("/")
+    if not host:
+        raise ValueError(
+            "Invalid SharePoint source. Expected one of:\n"
+            "  sharepoint:<hostname>/<library>\n"
+            "  sharepoint:<hostname>/sites/<site_name>/<library>\n"
+            "  sharepoint:<hostname>/sites/<site_name>/<subsite>::<library>"
+        )
+
+    if _SEPARATOR in rest:
+        site_path_str, _, library = rest.partition(_SEPARATOR)
+        site_path = site_path_str.strip("/")
+        if not library:
+            raise ValueError(f"Invalid SharePoint source: '{_SEPARATOR}' must be followed by a library name.")
+        return {"site": host, "site_path": site_path, "library": library}
+
+    segments = [s for s in rest.split("/") if s]
+
+    if segments and segments[0] in _SITE_PATH_PREFIXES:
+        if len(segments) < 3:
+            raise ValueError(
+                f"Invalid SharePoint source. '{segments[0]}/...' requires a site name and "
+                f"library, e.g. sharepoint:{host}/{segments[0]}/TeamSite/Documents"
+            )
+        if len(segments) > 3:
+            raise ValueError(
+                "Ambiguous SharePoint source with a subsite path — separate the site path "
+                f"from the library explicitly with '{_SEPARATOR}', e.g.\n"
+                f"  sharepoint:{host}/{'/'.join(segments[:-1])}{_SEPARATOR}{segments[-1]}"
+            )
+        site_path = "/".join(segments[:2])   # e.g. "sites/TeamSite"
+        library = segments[2]
+    else:
+        site_path = ""
+        library = "/".join(segments) if segments else "Documents"
+
+    return {"site": host, "site_path": site_path, "library": library}
