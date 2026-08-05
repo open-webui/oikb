@@ -19,9 +19,8 @@ _EXPORT_MIMES: dict[str, tuple[str, str]] = {
     "application/vnd.google-apps.presentation": ("text/plain", ".txt"),
 }
 
-# MIME types to skip (folders, forms, maps, etc.).
+# Non-file Google app MIME types to skip.
 _SKIP_MIMES = frozenset({
-    "application/vnd.google-apps.folder",
     "application/vnd.google-apps.form",
     "application/vnd.google-apps.map",
     "application/vnd.google-apps.site",
