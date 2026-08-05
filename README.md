@@ -21,6 +21,9 @@ oikb sync github:owner/repo --kb-id your-kb-id
 
 # Preview first (no upload)
 oikb sync ./docs --kb-id your-kb-id --dry-run
+
+# Watch an SMB/CIFS/NFS mounted volume
+oikb watch /mnt/smb_share/docs --kb-id your-kb-id --polling
 ```
 
 For multi-source, scheduled sync, or daemon mode — run `oikb init` to generate a `.oikb.yaml` config file, then `oikb daemon`.
@@ -33,7 +36,7 @@ For multi-source, scheduled sync, or daemon mode — run `oikb init` to generate
 |---|---|
 | `oikb init` | Generate `.oikb.yaml` interactively |
 | `oikb sync <source>` | Incremental sync to a Knowledge Base |
-| `oikb watch <dir>` | Watch for changes and auto-sync |
+| `oikb watch <dir>` | Watch for changes and auto-sync (supports SMB/NFS via `--polling`) |
 | `oikb daemon` | Long-lived scheduler with HTTP API |
 | `oikb diff <source>` | Preview what a sync would do |
 | `oikb validate` | Validate `.oikb.yaml` without running |
@@ -257,6 +260,31 @@ oikb history --clear --days 7   # Prune old entries
     OPEN_WEBUI_URL: ${{ secrets.OPEN_WEBUI_URL }}
     OPEN_WEBUI_API_KEY: ${{ secrets.OPEN_WEBUI_API_KEY }}
 ```
+
+## Network Mounts (SMB / CIFS / NFS)
+
+By default, `oikb watch` uses native OS filesystem events (FSEvents on macOS, inotify on Linux) which do **not** work on network-mounted volumes — the kernel doesn't receive change notifications from a remote server.
+
+Use `--polling` to switch to a polling-based observer that detects changes via periodic `stat()` calls:
+
+```bash
+# Basic SMB watch
+oikb watch /mnt/smb_share/docs --kb-id your-kb-id --polling
+
+# Faster detection (default: 5s)
+oikb watch /mnt/smb_share/docs --kb-id your-kb-id --polling --polling-interval 2
+
+# Custom debounce (default: 3s in polling mode, 1s in native mode)
+oikb watch /mnt/smb_share/docs --kb-id your-kb-id --polling --debounce 5
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--polling` | off | Use PollingObserver instead of native events |
+| `--polling-interval` | `5.0` | Seconds between filesystem polls (only with `--polling`) |
+| `--debounce` | `1.0` / `3.0` | Quiet period before sync (auto-set to 3s with `--polling`) |
+
+> **Tip:** Lower `--polling-interval` detects changes faster but increases I/O on the network share. For most SMB setups, the 5s default is a good balance.
 
 ## How It Works
 
