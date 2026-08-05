@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from oikb.http import make_http_client
+
 
 class OikbClient:
     """Stateless HTTP client for the Open WebUI KB API.
@@ -16,7 +18,7 @@ class OikbClient:
 
     def __init__(self, base_url: str, token: str, timeout: float = 120.0):
         self._base_url = base_url.rstrip("/")
-        self._http = httpx.Client(
+        self._http = make_http_client(
             base_url=f"{self._base_url}/api/v1",
             headers={"Authorization": f"Bearer {token}"},
             timeout=timeout,

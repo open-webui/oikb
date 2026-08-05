@@ -964,13 +964,15 @@ def validate(config_file: str | None, deep: bool):
 @click.option("--no-server", is_flag=True, help="Run scheduler only, no HTTP server.")
 @click.option("--config", "config_file", default=None, type=click.Path(), help="Path to .oikb.yaml (default: ./.oikb.yaml).")
 @click.option("--log-format", default=None, type=click.Choice(["text", "json"]), help="Log output format (default: text, env: LOG_FORMAT).")
-def daemon(port: int, no_server: bool, config_file: str | None, log_format: str | None):
+@click.option("--log-level", default=None, type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False), help="Log level (default: INFO, env: LOG_LEVEL).")
+def daemon(port: int, no_server: bool, config_file: str | None, log_format: str | None, log_level: str | None):
     """Run as a long-lived daemon with scheduled sync.
 
     Reads .oikb.yaml and syncs each source on its configured interval.
     Exposes /health, /history, and /sync endpoints.
     """
     log_format = log_format or os.environ.get("LOG_FORMAT", "text")
+    log_level = log_level or os.environ.get("LOG_LEVEL", "INFO")
 
     if config_file:
         import yaml
@@ -995,7 +997,7 @@ def daemon(port: int, no_server: bool, config_file: str | None, log_format: str 
             sys.exit(1)
 
     from oikb.daemon import start_daemon
-    start_daemon(entries=entries, port=port, no_server=no_server, log_format=log_format)
+    start_daemon(entries=entries, port=port, no_server=no_server, log_format=log_format, log_level=log_level)
 
 
 # ── history ─────────────────────────────────────────────────────

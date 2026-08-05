@@ -791,6 +791,7 @@ oikb sync --dry-run                 Preview without uploading
 oikb sync --max-file-size 50mb      Skip large files
 oikb sync --concurrency 4           Parallel uploads
 oikb sync --scan-secrets            Block files with credentials
+oikb sync --log_level DEBUG         Set log level (currently only supported for the web-connector)
 oikb watch <dir> --kb-id ID         Auto-sync on file change
 oikb daemon                         Start scheduled daemon
 oikb daemon --log-format json       JSON logging
@@ -847,3 +848,7 @@ oikb validate --deep # Verify API + KB connectivity
 
 Open WebUI → Knowledge → click a KB → the ID is in the URL:
 `http://localhost:3000/knowledge/8f3a2b1c-1234-5678-9abc-def012345678`
+
+### Issues for self-signed certificates
+Use the environment variable `OIKB_INSECURE_SSL=true` to disable SSL verification.  
+This one is currently only supported for the `web`-connector.
