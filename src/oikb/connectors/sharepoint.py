@@ -250,16 +250,7 @@ def parse_sharepoint_source(source: str) -> dict[str, str]:
     """Parse a SharePoint source string. Supports:
       sharepoint:<hostname>/<library>
       sharepoint:<hostname>/sites/<site_name>/<library>
-      sharepoint:<hostname>/sites/<site_name>/<subsite>::<library>   (subsites)
-
-    The "::" separator is required whenever the site path has more than one
-    segment after sites/<name> — otherwise there's no way to tell a subsite
-    apart from a library name.
-
-    Examples:
-      sharepoint:mycompany.sharepoint.us/Documents
-      sharepoint:mycompany.sharepoint.us/sites/TeamSite/Documents
-      sharepoint:mycompany.sharepoint.us/sites/TeamSite/SubSite::Documents
+      sharepoint:<hostname>/sites/<site_name>/<subsite>::<library>
     """
     source = source.removeprefix("sharepoint:")
     host, _, rest = source.partition("/")
