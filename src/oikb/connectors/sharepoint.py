@@ -8,6 +8,12 @@ and one of:
     encrypted PEM keys.
 
 The two auth methods are mutually exclusive.
+
+Select Microsoft Endpoints. Use SHAREPOINT_CLOUD set to
+one of:
+  - SHAREPOINT_CLOUD=commercial // default
+  - SHAREPOINT_CLOUD=gcc_high
+  - SHAREPOINT_CLOUD=dod
 """
 
 from __future__ import annotations
@@ -22,6 +28,21 @@ from typing import Any
 import httpx
 
 from oikb.connectors import BaseConnector, ManifestEntry
+
+_CLOUD_ENDPOINTS: dict[str, dict[str, str]] = {
+    "commercial": {
+        "authority": "https://login.microsoftonline.com",
+        "graph": "https://graph.microsoft.com/v1.0",
+    },
+    "gcc_high": {
+        "authority": "https://login.microsoftonline.us",
+        "graph": "https://graph.microsoft.us/v1.0",
+    },
+    "dod": {
+        "authority": "https://login.microsoftonline.us",
+        "graph": "https://dod-graph.microsoft.us/v1.0",
+    },
+}
 
 
 class SharePointConnector(BaseConnector):
@@ -46,6 +67,11 @@ class SharePointConnector(BaseConnector):
         cert_path = certificate_path or os.environ.get("SHAREPOINT_CERTIFICATE_PATH", "")
         cert_password = certificate_password or os.environ.get("SHAREPOINT_CERTIFICATE_PASSWORD", "")
 
+        cloud = os.environ.get("SHAREPOINT_CLOUD", "commercial")
+        if cloud not in _CLOUD_ENDPOINTS:
+            raise ValueError(f"SHAREPOINT_CLOUD must be one of {list(_CLOUD_ENDPOINTS)}, got '{cloud}'")
+        endpoints = _CLOUD_ENDPOINTS[cloud]
+
         if not tid or not cid:
             raise ValueError(
                 "SharePoint credentials required. Set env vars:\n"
@@ -66,7 +92,7 @@ class SharePointConnector(BaseConnector):
                 "  SHAREPOINT_CERTIFICATE_PATH  (certificate)"
             )
 
-        token_url = f"https://login.microsoftonline.com/{tid}/oauth2/v2.0/token"
+        token_url = f"{endpoints['authority']}/{tid}/oauth2/v2.0/token"
 
         if cert_path:
             access_token = _get_token_via_certificate(
@@ -74,16 +100,18 @@ class SharePointConnector(BaseConnector):
                 client_id=cid,
                 certificate_path=cert_path,
                 certificate_password=cert_password or None,
+                graph_base=endpoints["graph"]
             )
         else:
             access_token = _get_token_via_secret(
                 token_url=token_url,
                 client_id=cid,
                 client_secret=secret,
+                graph_base=endpoints["graph"]
             )
 
         self._http = httpx.Client(
-            base_url="https://graph.microsoft.com/v1.0",
+            base_url=endpoints["graph"],
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=60.0,
             follow_redirects=True,
@@ -144,7 +172,7 @@ class SharePointConnector(BaseConnector):
 # ── Auth helpers ────────────────────────────────────────────────
 
 
-def _get_token_via_secret(token_url: str, client_id: str, client_secret: str) -> str:
+def _get_token_via_secret(token_url: str, client_id: str, client_secret: str, graph_base: str) -> str:
     """Obtain an access token using client ID + client secret."""
     token_resp = httpx.post(
         token_url,
@@ -152,7 +180,7 @@ def _get_token_via_secret(token_url: str, client_id: str, client_secret: str) ->
             "grant_type": "client_credentials",
             "client_id": client_id,
             "client_secret": client_secret,
-            "scope": "https://graph.microsoft.com/.default",
+            "scope": f"{graph_base.rsplit('/v1.0', 1)[0]}/.default",
         },
     )
     token_resp.raise_for_status()
@@ -163,6 +191,7 @@ def _get_token_via_certificate(
     token_url: str,
     client_id: str,
     certificate_path: str,
+    graph_base: str,
     certificate_password: str | None = None,
 ) -> str:
     """Obtain an access token using client ID + certificate (JWT assertion).
@@ -231,7 +260,7 @@ def _get_token_via_certificate(
             "client_id": client_id,
             "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
             "client_assertion": assertion,
-            "scope": "https://graph.microsoft.com/.default",
+            "scope": f"{graph_base.rsplit('/v1.0', 1)[0]}/.default",
         },
     )
     token_resp.raise_for_status()
