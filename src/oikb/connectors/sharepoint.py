@@ -191,8 +191,8 @@ def _get_token_via_certificate(
     token_url: str,
     client_id: str,
     certificate_path: str,
-    certificate_password: str | None = None,
     graph_base: str,
+    certificate_password: str | None = None,
 ) -> str:
     """Obtain an access token using client ID + certificate (JWT assertion).
 
