@@ -14,17 +14,56 @@ from typing import Any
 
 import httpx
 
-from oikb.connectors import BaseConnector, ManifestEntry
+from oikb.connectors import BaseConnector, ManifestEntry, SourceFileUnavailable
+
+# A link's visible label is the title of another page in the space, which syncs
+# as its own file. Dropped with the link so a section index does not become a
+# document that is nothing but titles already in the KB.
+_LINK_BODY = re.compile(
+    r"<ac:plain-text-link-body>.*?</ac:plain-text-link-body>", re.S | re.I
+)
+_CDATA = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.S)
+# Where one block ends the next begins on its own line: a code block run
+# together with the sentence before it reads as one thought.
+_BREAK = re.compile(
+    r"<br\s*/?>"
+    r"|</(?:p|div|h[1-6]|li|ul|ol|tr|td|th|blockquote|pre|table|section)\s*>"
+    r"|</ac:[\w.-]+\s*>",
+    re.I,
+)
+_TAG = re.compile(r"<[^>]+>")
+# Marks where a parked macro body goes back. Storage format cannot contain NUL.
+_PARKED = re.compile("\x00(\\d+)\x00")
+_INLINE_SPACE = re.compile(r"[^\S\n]+")
 
 
 def _storage_to_text(storage_html: str) -> str:
     """Convert Confluence storage format (XHTML) to plain text."""
-    # Strip all HTML tags.
-    text = re.sub(r"<[^>]+>", " ", storage_html)
+    if not storage_html:
+        return ""
+
+    text = _LINK_BODY.sub(" ", storage_html)
+
+    # Macro bodies are literal text, so they are parked before the markup passes
+    # run: `<[^>]+>` would otherwise treat `<![CDATA[...]]>` as one tag and
+    # delete a code block or panel whole, and their entities are not escaped.
+    parked: list[str] = []
+
+    def _park(match: re.Match) -> str:
+        parked.append(match.group(1))
+        return f"\n\x00{len(parked) - 1}\x00\n"
+
+    text = _CDATA.sub(_park, text)
+    text = _BREAK.sub("\n", text)
+    text = _TAG.sub(" ", text)
     text = html.unescape(text)
-    # Collapse whitespace.
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+
+    lines = (_INLINE_SPACE.sub(" ", line).strip() for line in text.split("\n"))
+    text = "\n".join(line for line in lines if line)
+
+    # Restored after the whitespace pass so a code block keeps its own line
+    # breaks and indentation.
+    return _PARKED.sub(lambda m: parked[int(m.group(1))].strip(), text).strip()
 
 
 class ConfluenceConnector(BaseConnector):
@@ -141,6 +180,14 @@ class ConfluenceConnector(BaseConnector):
 
         storage = data.get("body", {}).get("storage", {}).get("value", "")
         text = _storage_to_text(storage)
+        if not text:
+            # Open WebUI extracts text as part of POST /files/ and answers 400
+            # for a file it can get nothing out of, so uploading this would fail
+            # the page on every run for as long as it exists.
+            raise SourceFileUnavailable(
+                "page has no text to sync (blank, or only a macro such as a "
+                "children index)"
+            )
         return text.encode("utf-8")
 
     def close(self) -> None:
