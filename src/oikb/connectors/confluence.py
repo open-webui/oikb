@@ -11,6 +11,7 @@ import html
 import os
 import re
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 
@@ -35,6 +36,7 @@ class ConfluenceConnector(BaseConnector):
         base_url:  Confluence instance URL (or CONFLUENCE_URL env var).
         user:      Confluence user email (or CONFLUENCE_USER env var).
         token:     Confluence API token (or CONFLUENCE_TOKEN env var).
+        structure: "flat" or "hierarchical" manifest paths.
     """
 
     def __init__(
@@ -43,8 +45,12 @@ class ConfluenceConnector(BaseConnector):
         base_url: str | None = None,
         user: str | None = None,
         token: str | None = None,
+        structure: str = "flat",
     ):
+        if structure not in {"flat", "hierarchical"}:
+            raise ValueError("structure must be 'flat' or 'hierarchical'")
         self.space_key = space_key
+        self.structure = structure
 
         self._base_url = (base_url or os.environ.get("CONFLUENCE_URL", "")).rstrip("/")
         self._user = user or os.environ.get("CONFLUENCE_USER", "")
@@ -68,12 +74,33 @@ class ConfluenceConnector(BaseConnector):
             timeout=60.0,
         )
 
+        # Resolve space key to numeric ID (v2 API requires ID).
+        if not self.space_key.isdecimal():
+            try:
+                resp = self._http.get(
+                    "/api/v2/spaces", params={"keys": [self.space_key]}
+                )
+                resp.raise_for_status()
+                results = resp.json().get("results", [])
+                matches = [
+                    space
+                    for space in results
+                    if space.get("key", "").casefold() == self.space_key.casefold()
+                ]
+                if len(matches) != 1:
+                    raise ValueError(f"Confluence space '{self.space_key}' not found")
+                self.space_key = str(matches[0]["id"])
+            except Exception:
+                self._http.close()
+                raise
+
         # Cache page content for read_file.
         self._page_cache: dict[str, str] = {}
 
     def build_manifest(self) -> list[ManifestEntry]:
         """List all pages in the space and build a manifest."""
-        entries: list[ManifestEntry] = []
+        self._page_cache.clear()
+        pages: list[dict[str, Any]] = []
         cursor = None
 
         while True:
@@ -88,30 +115,7 @@ class ConfluenceConnector(BaseConnector):
             resp.raise_for_status()
             data = resp.json()
 
-            for page in data.get("results", []):
-                page_id = page["id"]
-                title = page["title"]
-                version = page.get("version", {}).get("number", 0)
-
-                # Use version number as part of checksum.
-                checksum = hashlib.sha256(
-                    f"{page_id}:v{version}".encode()
-                ).hexdigest()[:16]
-
-                # Sanitize title for filename.
-                filename = re.sub(r'[<>:"/\\|?*]', "_", title) + ".txt"
-
-                entries.append(
-                    ManifestEntry(
-                        filename=filename,
-                        path="",
-                        checksum=checksum,
-                        size=0,
-                    )
-                )
-
-                # Store page ID for later retrieval.
-                self._page_cache[filename] = page_id
+            pages.extend(data.get("results", []))
 
             # Handle pagination.
             next_link = data.get("_links", {}).get("next")
@@ -123,12 +127,59 @@ class ConfluenceConnector(BaseConnector):
             if not cursor:
                 break
 
+        pages_by_id = {str(page["id"]): page for page in pages}
+        entries = [self._page_entry(page, pages_by_id) for page in pages]
         entries.sort(key=lambda e: e.display_path)
         return entries
 
+    def _page_entry(
+        self, page: dict[str, Any], pages_by_id: dict[str, dict[str, Any]]
+    ) -> ManifestEntry:
+        page_id = page["id"]
+        title = page["title"]
+        version = page.get("version", {}).get("number", 0)
+        checksum = hashlib.sha256(f"{page_id}:v{version}".encode()).hexdigest()[:16]
+        filename = self._safe_name(title) + ".txt"
+        path = self._page_path(page, pages_by_id)
+        cache_key = self._entry_key(path, filename)
+        if self.structure == "hierarchical" and cache_key in self._page_cache:
+            raise ValueError(f"Duplicate Confluence page path: {cache_key}")
+        self._page_cache[cache_key] = page_id
+        return ManifestEntry(filename=filename, path=path, checksum=checksum, size=0)
+
+    def _page_path(
+        self, page: dict[str, Any], pages_by_id: dict[str, dict[str, Any]]
+    ) -> str:
+        if self.structure != "hierarchical":
+            return ""
+
+        ancestors: list[str] = []
+        parent_id = page.get("parentId")
+        seen: set[str] = set()
+        while parent_id:
+            parent_id = str(parent_id)
+            if parent_id in seen:
+                raise ValueError(f"Circular Confluence page hierarchy at page {page['id']}")
+            seen.add(parent_id)
+            parent = pages_by_id.get(parent_id)
+            if not parent:
+                break
+            ancestors.append(self._safe_name(parent.get("title")))
+            parent_id = parent.get("parentId")
+        return "/".join(reversed(ancestors))
+
+    @staticmethod
+    def _safe_name(name: str | None) -> str:
+        safe = re.sub(r'[<>:"/\\|?*]', "_", name or "Untitled").strip()
+        return safe or "Untitled"
+
+    @staticmethod
+    def _entry_key(path: str, filename: str) -> str:
+        return f"{path}/{filename}" if path else filename
+
     def read_file(self, path: str, filename: str) -> bytes:
         """Fetch a page's content and return as text."""
-        page_id = self._page_cache.get(filename)
+        page_id = self._page_cache.get(self._entry_key(path, filename))
         if not page_id:
             raise FileNotFoundError(f"Page not found: {filename}")
 
@@ -153,14 +204,25 @@ def parse_confluence_source(source: str) -> dict[str, str | None]:
     Examples:
         confluence:ENG
         confluence:https://company.atlassian.net/ENG
+        confluence:ENG?structure=hierarchical
     """
     source = source.removeprefix("confluence:")
-
-    # Check if it includes a URL.
-    if source.startswith("https://"):
-        parts = source.rsplit("/", 1)
-        if len(parts) == 2:
-            return {"base_url": parts[0], "space_key": parts[1]}
+    is_url = source.startswith(("http://", "https://"))
+    parsed = urlsplit(source if is_url else f"confluence://{source}")
+    space_key = parsed.path.strip("/") if is_url else parsed.netloc
+    if not space_key or "/" in space_key:
         raise ValueError("Invalid Confluence source. Expected: confluence:SPACEKEY")
 
-    return {"space_key": source, "base_url": None}
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    unknown = set(params) - {"structure"}
+    if unknown:
+        raise ValueError(f"Invalid Confluence source. Unknown parameter: {min(unknown)}")
+    structure = params.get("structure", "flat")
+    if structure not in {"flat", "hierarchical"}:
+        raise ValueError("Invalid Confluence source. Expected structure=flat or structure=hierarchical")
+
+    return {
+        "base_url": f"{parsed.scheme}://{parsed.netloc}" if is_url else None,
+        "space_key": space_key,
+        "structure": structure,
+    }

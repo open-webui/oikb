@@ -89,7 +89,11 @@ def _resolve_connector(source: str, branch: str | None = None, path: str | None 
     if source.startswith("confluence:"):
         from oikb.connectors.confluence import ConfluenceConnector, parse_confluence_source
         parsed = parse_confluence_source(source)
-        return ConfluenceConnector(space_key=parsed["space_key"], base_url=parsed.get("base_url"))
+        return ConfluenceConnector(
+            space_key=parsed["space_key"],
+            base_url=parsed.get("base_url"),
+            structure=parsed.get("structure", "flat"),
+        )
 
     if source.startswith("notion:"):
         from oikb.connectors.notion import NotionConnector, parse_notion_source
