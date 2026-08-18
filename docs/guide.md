@@ -247,9 +247,16 @@ Requires `GITLAB_TOKEN` or `BITBUCKET_TOKEN` respectively.
 
 ```bash
 oikb sync confluence:SPACE_KEY --kb-id your-kb-id
+
+# Preserve the Confluence page hierarchy in manifest paths.
+oikb sync 'confluence:SPACE_KEY?structure=hierarchical' --kb-id your-kb-id
 ```
 
-Requires `CONFLUENCE_URL`, `CONFLUENCE_USERNAME`, and `CONFLUENCE_API_TOKEN`.
+With hierarchical structure enabled, existing `filter.include` and
+`filter.exclude` patterns can select page trees, for example
+`Engineering/Runbooks*`.
+
+Requires `CONFLUENCE_URL`, `CONFLUENCE_USER`, and `CONFLUENCE_TOKEN`.
 
 ### BookStack
 
