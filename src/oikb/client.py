@@ -132,7 +132,23 @@ class OikbClient:
 
     def list_kb_files(self, kb_id: str) -> list[dict[str, Any]]:
         """GET /knowledge/{id}/files — list files in a KB."""
-        resp = self._http.get(f"/knowledge/{kb_id}")
+        resp = self._http.get(f"/knowledge/{kb_id}/files", params={"page": 1})
+        if resp.status_code == 404:
+            # Older Open WebUI has no /files route; the KB payload carries the list.
+            resp = self._http.get(f"/knowledge/{kb_id}")
+            resp.raise_for_status()
+            return resp.json().get("files") or []
         resp.raise_for_status()
         data = resp.json()
-        return data.get("files", [])
+        items = data.get("items") or []
+        total = data.get("total", len(items))
+        page = 1
+        while len(items) < total:
+            page += 1
+            resp = self._http.get(f"/knowledge/{kb_id}/files", params={"page": page})
+            resp.raise_for_status()
+            page_items = resp.json().get("items") or []
+            if not page_items:
+                break
+            items.extend(page_items)
+        return items
