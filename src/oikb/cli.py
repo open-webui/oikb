@@ -758,7 +758,7 @@ def status(url: str | None, token: str | None, kb: str | None):
 
     try:
         info = client.get_kb(kb)
-        files = info.get("files", [])
+        files = client.list_kb_files(kb)
     except Exception as e:
         click.echo(click.style(f"Failed: {e}", fg="red"), err=True)
         sys.exit(1)
@@ -937,7 +937,7 @@ def validate(config_file: str | None, deep: bool):
             try:
                 kb = client.get_kb(kb_id)
                 kb_name = kb.get("name", "?")
-                file_count = len(kb.get("files", []))
+                file_count = len(kb.get("files") or [])
                 click.echo(
                     click.style(f"  ✓ {entry_name}", fg="green")
                     + f"  {source} → {kb_name} ({file_count} files)"
