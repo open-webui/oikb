@@ -45,6 +45,7 @@ class SyncResult:
     dirs_created: int = 0
     dirs_removed: int = 0
     skipped_failed: int = 0
+    skipped_pending: int = 0
     errors: list[str] | None = None
     warnings: list[str] | None = None
 
@@ -68,6 +69,8 @@ class SyncResult:
             parts.append(f"{self.dirs_removed} dirs removed")
         if self.skipped_failed:
             parts.append(f"{self.skipped_failed} skipped (known failures)")
+        if self.skipped_pending:
+            parts.append(f"{self.skipped_pending} skipped (still processing)")
         return ", ".join(parts) if parts else "nothing to do"
 
 
@@ -279,6 +282,77 @@ def _run_sync_inner(
                 err=True,
             )
 
+    # ── 3c. Reconcile tracked uploads instead of re-uploading ──
+    # The server ingests uploads asynchronously and never reports ingestion
+    # failures to the upload call (HTTP 200, then the file silently lands in
+    # status 'failed' or is never linked to the KB). Such files reappear as
+    # "added" in every diff. Instead of re-uploading them (which would create
+    # yet another server-side copy each cycle), check their stored status.
+    if history and not dry_run:
+        tracked = history.tracked_uploads(kb_id)
+        if tracked:
+            reported = {(e.get("path", ""), e["filename"]) for e in (*added, *modified)}
+
+            def _drop(key: tuple[str, str]) -> None:
+                nonlocal added, modified
+                added = [e for e in added if (e.get("path", ""), e["filename"]) != key]
+                modified = [e for e in modified if (e.get("path", ""), e["filename"]) != key]
+
+            for key, rec in tracked.items():
+                if key not in reported:
+                    # No longer reported as changed → linked fine (or removed
+                    # from the source and handled by cleanup). Stop tracking.
+                    history.untrack_upload(kb_id, *key)
+                    continue
+
+                manifest_entry = manifest_by_key.get(key)
+                if manifest_entry is None or manifest_entry.checksum != rec["checksum"]:
+                    continue  # source changed → fall through to normal re-upload
+
+                try:
+                    status = client.get_file_status(rec["file_id"])
+                except Exception:
+                    status = "unknown"
+
+                if status in ("pending", "processing", "unknown"):
+                    # Still ingesting (or status unreadable) → skip this run,
+                    # check again on the next one. No re-upload.
+                    _drop(key)
+                    result.skipped_pending += 1
+                elif status == "failed":
+                    history.record_failure(
+                        kb_id, key[0], key[1], rec["checksum"],
+                        "server-side ingestion failed",
+                    )
+                    history.untrack_upload(kb_id, *key)
+                    _drop(key)
+                    result.skipped_failed += 1
+                elif status == "completed":
+                    # Processed fine but never linked (e.g. duplicate content
+                    # rejection, or manual removal from the KB). Try re-linking
+                    # the existing file instead of uploading another copy.
+                    try:
+                        client.add_file_to_kb(
+                            kb_id, rec["file_id"],
+                            directory_id=directory_map.get(key[0]) or None,
+                        )
+                        history.untrack_upload(kb_id, *key)
+                        _drop(key)
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code in _PERMANENT_UPLOAD_STATUSES:
+                            history.record_failure(
+                                kb_id, key[0], key[1], rec["checksum"], str(e)
+                            )
+                            history.untrack_upload(kb_id, *key)
+                            _drop(key)
+                            result.skipped_failed += 1
+                        else:
+                            raise
+                else:
+                    # File is gone server-side (None) → stop tracking and let
+                    # the normal upload path below re-upload it.
+                    history.untrack_upload(kb_id, *key)
+
     if show_progress:
         parts = []
         if added:
@@ -399,7 +473,7 @@ def _run_sync_inner(
                 content = connector.read_file(path, filename)
                 check_stop()
                 directory_id = directory_map.get(path) if path else None
-                client.upload_file(
+                resp = client.upload_file(
                     file_content=content,
                     filename=filename,
                     kb_id=kb_id,
@@ -410,6 +484,11 @@ def _run_sync_inner(
                     progress.update(task_id, advance=1, description=f"[cyan]{display}[/cyan]")
                 if history is not None:
                     history.clear_failure(kb_id, path, filename)
+                    file_id = resp.get("id") if isinstance(resp, dict) else None
+                    if file_id:
+                        history.record_upload(
+                            kb_id, path, filename, manifest_entry.checksum, file_id
+                        )
                 return (change_type, None)
             except SourceFileUnavailable as e:
                 message = f"{display}: {e}"

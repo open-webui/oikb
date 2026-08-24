@@ -321,6 +321,7 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
                 "deleted": result.deleted,
                 "unmodified": result.unmodified,
                 "skipped_failed": result.skipped_failed,
+                "skipped_pending": result.skipped_pending,
                 "warnings": result.warnings or [],
                 "errors": result.errors or [],
                 "summary": result.summary(),

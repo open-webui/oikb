@@ -47,6 +47,21 @@ CREATE TABLE IF NOT EXISTS failed_file (
     failed_at  REAL NOT NULL,
     PRIMARY KEY (kb_id, path, filename)
 );
+
+-- Files successfully handed to the server (upload HTTP 200) whose ingestion
+-- runs asynchronously. Tracked so the next sync can check their server-side
+-- status instead of blindly re-uploading them when the diff reports them as
+-- "added" again (which happens for every file that never gets linked to the
+-- KB — e.g. rejected during async processing).
+CREATE TABLE IF NOT EXISTS uploaded_file (
+    kb_id       TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    filename    TEXT NOT NULL,
+    checksum    TEXT NOT NULL,
+    file_id     TEXT NOT NULL,
+    uploaded_at REAL NOT NULL,
+    PRIMARY KEY (kb_id, path, filename)
+);
 """
 
 
@@ -264,6 +279,59 @@ class SyncHistory:
                 cursor = conn.execute("DELETE FROM failed_file")
             conn.commit()
             return cursor.rowcount
+
+    # ── Async upload tracking ─────────────────────────────────
+
+    def record_upload(
+        self,
+        kb_id: str,
+        path: str,
+        filename: str,
+        checksum: str,
+        file_id: str,
+    ) -> None:
+        """Track a file that was accepted by the server (upload HTTP 200)."""
+        if not self._all_conns:
+            return
+
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO uploaded_file
+                   (kb_id, path, filename, checksum, file_id, uploaded_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (kb_id, path, filename, checksum, file_id, time.time()),
+            )
+            conn.commit()
+
+    def untrack_upload(self, kb_id: str, path: str, filename: str) -> None:
+        """Stop tracking an upload (linked, failed, or gone server-side)."""
+        if not self._all_conns:
+            return
+
+        with self._get_conn() as conn:
+            conn.execute(
+                "DELETE FROM uploaded_file WHERE kb_id = ? AND path = ? AND filename = ?",
+                (kb_id, path, filename),
+            )
+            conn.commit()
+
+    def tracked_uploads(self, kb_id: str) -> dict[tuple[str, str], dict[str, str]]:
+        """Map of (path, filename) -> {checksum, file_id} for tracked uploads."""
+        if not self._all_conns:
+            return {}
+
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT path, filename, checksum, file_id FROM uploaded_file WHERE kb_id = ?",
+                (kb_id,),
+            ).fetchall()
+            return {
+                (row["path"], row["filename"]): {
+                    "checksum": row["checksum"],
+                    "file_id": row["file_id"],
+                }
+                for row in rows
+            }
 
     def close(self) -> None:
         """Close all connections in the pool."""
