@@ -1055,6 +1055,53 @@ def history(limit: int, kb_id: str | None, errors: bool, clear: bool, days: int,
             click.echo(click.style(f"  Error: {e['error_message']}", fg="red"))
 
 
+# ── failures ────────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--kb-id", default=None, help="Filter by Knowledge Base ID.")
+@click.option("--clear", is_flag=True, help="Clear failure records (next sync retries the files).")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+def failures(kb_id: str | None, clear: bool, as_json: bool):
+    """List files whose upload was permanently rejected by the server (4xx).
+
+    Such files are skipped on subsequent syncs until their content changes.
+    Use --clear to forget the records and retry them on the next sync.
+    """
+    import json as json_mod
+    from oikb.history import SyncHistory
+
+    hist = SyncHistory()
+
+    if clear:
+        count = hist.clear_failures(kb_id=kb_id)
+        hist.close()
+        scope = f" for KB {kb_id}" if kb_id else ""
+        click.echo(f"Cleared {count} failure record(s){scope}. They will be retried on the next sync.")
+        return
+
+    entries = hist.list_failures(kb_id=kb_id)
+    hist.close()
+
+    if as_json:
+        click.echo(json_mod.dumps(entries, indent=2, default=str))
+        return
+
+    if not entries:
+        click.echo("No known failed uploads.")
+        return
+
+    click.echo(f"{'FILE':<60} {'KB-ID':<38} {'FAILED'}")
+    click.echo("-" * 110)
+    for e in entries:
+        path = e.get("path") or ""
+        display = f"{path}/{e['filename']}" if path else e["filename"]
+        kb = (e["kb_id"] or "")[:36]
+        ago = _time_ago(e.get("failed_at", 0))
+        click.echo(f"{display[:58]:<60} {kb:<38} {ago}")
+        if e.get("error"):
+            click.echo(click.style(f"  {e['error'][:100]}", fg="red"))
+
+
 # ── Helpers ─────────────────────────────────────────────────────
 
 def _format_size(size: int) -> str:
