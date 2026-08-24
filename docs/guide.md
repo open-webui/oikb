@@ -803,6 +803,8 @@ oikb status --kb-id ID              Show KB info
 oikb history                        View sync history
 oikb history --json                 JSON output
 oikb history --errors               Failed syncs only
+oikb failures                       List permanently rejected files
+oikb failures --clear               Forget rejections (retried next sync)
 oikb reset --kb-id ID               Delete all files in a KB
 oikb config set url <url>           Save Open WebUI URL
 oikb config set token <token>       Save API key
@@ -842,6 +844,22 @@ You're running `oikb sync` without arguments and there's no `.oikb.yaml` in the 
 oikb validate        # Check config syntax
 oikb validate --deep # Verify API + KB connectivity
 ```
+
+### Files show as "skipped (known failures)"
+
+Open WebUI rejects some files during ingestion — e.g. documents whose extracted
+text is identical to a file already in the KB, or files with no extractable text.
+Because the server processes uploads asynchronously, such files never get linked
+to the KB and would otherwise be re-uploaded on every sync cycle. oikb records
+these rejections and skips the files until their content changes.
+
+```bash
+oikb failures           # which files are affected, and why
+oikb failures --clear   # forget the records → files are retried on next sync
+```
+
+If a file was fixed at the source, no action is needed — a changed checksum is
+retried automatically.
 
 ### How do I find my KB ID?
 
