@@ -222,7 +222,7 @@ class ZoteroConnector(BaseConnector):
             return None
         for item in collections:
             data = item.get("data", {})
-            parent = data.get("parentCollection")
+            parent = data.get("parentCollection") or None
             if parent != parent_key or data.get("name") != parts[0]:
                 continue
             if len(parts) == 1:
