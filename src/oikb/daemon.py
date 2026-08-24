@@ -311,6 +311,7 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
             manifest_filter=mf,
             concurrency=entry.get("concurrency", 1),
             cancel_requested=_shutdown_event.is_set if _shutdown_event else None,
+            history=_history,
         )
 
         if dry_run:
@@ -319,6 +320,8 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
                 "modified": result.modified,
                 "deleted": result.deleted,
                 "unmodified": result.unmodified,
+                "skipped_failed": result.skipped_failed,
+                "skipped_pending": result.skipped_pending,
                 "warnings": result.warnings or [],
                 "errors": result.errors or [],
                 "summary": result.summary(),
