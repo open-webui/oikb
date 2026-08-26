@@ -9,6 +9,28 @@
 Auth via ZOTERO_LIBRARY_ID, ZOTERO_API_KEY, and optional ZOTERO_LIBRARY_TYPE.
 Source syntax: zotero:<collection>%%<subcollection>. Use bare zotero: for all
 top-level collections and unfiled library items.
+
+Multiple libraries in a single daemon
+--------------------------------------
+Embed a numeric library ID before the collection path to target a specific
+library and resolve its credentials from per-library env vars:
+
+    source: "zotero:123456:"              # all collections in library 123456
+    source: "zotero:123456:Research%%ML"  # specific collection
+
+Every ZOTERO_* env var supports a per-library override by appending the
+library ID (e.g. ZOTERO_API_KEY_123456). The global var is the fallback:
+
+    ZOTERO_API_KEY_123456      overrides  ZOTERO_API_KEY
+    ZOTERO_LIBRARY_TYPE_123456 overrides  ZOTERO_LIBRARY_TYPE
+    ZOTERO_CHECKSUM_123456     overrides  ZOTERO_CHECKSUM
+    ZOTERO_INCLUDE_NOTES_123456           ZOTERO_INCLUDE_NOTES
+    ZOTERO_INCLUDE_ANNOTATIONS_123456     ZOTERO_INCLUDE_ANNOTATIONS
+    ZOTERO_EXCLUDE_123456                 ZOTERO_EXCLUDE
+    ZOTERO_UNFILED_DIR_123456             ZOTERO_UNFILED_DIR
+    ZOTERO_WEBDAV_URL_123456              ZOTERO_WEBDAV_URL
+    ZOTERO_WEBDAV_USER_123456             ZOTERO_WEBDAV_USER
+    ZOTERO_WEBDAV_PASSWORD_123456         ZOTERO_WEBDAV_PASSWORD
 """
 
 from __future__ import annotations
@@ -28,6 +50,19 @@ import httpx
 from oikb.connectors import BaseConnector, ManifestEntry, SourceFileUnavailable
 
 HIERARCHY_SEP = "%%"
+
+
+def _zotero_env(key: str, library_id: str | None, default: str = "") -> str:
+    """Return the per-library env var if set, otherwise the global one.
+
+    Allows each Zotero source entry to be configured independently when
+    multiple libraries are synced from a single daemon instance.
+    """
+    if library_id:
+        value = os.environ.get(f"{key}_{library_id}")
+        if value is not None:
+            return value
+    return os.environ.get(key, default)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +92,7 @@ class ZoteroConnector(BaseConnector):
             ) from exc
 
         library_id = library_id or os.environ.get("ZOTERO_LIBRARY_ID", "")
-        api_key = api_key or os.environ.get("ZOTERO_API_KEY", "")
+        api_key = api_key or _zotero_env("ZOTERO_API_KEY", library_id)
         if not library_id or not api_key:
             raise ValueError(
                 "Zotero credentials required. Set ZOTERO_LIBRARY_ID and ZOTERO_API_KEY."
@@ -66,27 +101,28 @@ class ZoteroConnector(BaseConnector):
         self.hierarchy = hierarchy
         self._zot = zotero.Zotero(
             library_id,
-            library_type or os.environ.get("ZOTERO_LIBRARY_TYPE", "user"),
+            library_type or _zotero_env("ZOTERO_LIBRARY_TYPE", library_id, "user"),
             api_key,
         )
-        self.include_notes = os.environ.get("ZOTERO_INCLUDE_NOTES", "").strip().lower() in {
+        self.include_notes = _zotero_env("ZOTERO_INCLUDE_NOTES", library_id).strip().lower() in {
             "1", "true", "yes", "on",
         }
-        self.include_annotations = os.environ.get(
-            "ZOTERO_INCLUDE_ANNOTATIONS", ""
-        ).strip().lower() in {"1", "true", "yes", "on"}
-        self.checksum_mode = os.environ.get("ZOTERO_CHECKSUM", "version").strip().lower()
+        self.include_annotations = (
+            _zotero_env("ZOTERO_INCLUDE_ANNOTATIONS", library_id).strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        self.checksum_mode = _zotero_env("ZOTERO_CHECKSUM", library_id, "version").strip().lower()
         if self.checksum_mode not in {"version", "content"}:
             raise ValueError("ZOTERO_CHECKSUM must be 'version' or 'content'.")
         self.exclude = [
             part.strip().strip("/")
-            for part in os.environ.get("ZOTERO_EXCLUDE", "").split(",")
+            for part in _zotero_env("ZOTERO_EXCLUDE", library_id).split(",")
             if part.strip().strip("/")
         ]
-        self.unfiled_dir = os.environ.get("ZOTERO_UNFILED_DIR", "_unfiled").strip("/")
-        self.webdav_url = os.environ.get("ZOTERO_WEBDAV_URL", "").rstrip("/")
-        self.webdav_user = os.environ.get("ZOTERO_WEBDAV_USER", "")
-        self.webdav_password = os.environ.get("ZOTERO_WEBDAV_PASSWORD", "")
+        self.unfiled_dir = _zotero_env("ZOTERO_UNFILED_DIR", library_id, "_unfiled").strip("/")
+        self.webdav_url = _zotero_env("ZOTERO_WEBDAV_URL", library_id).rstrip("/")
+        self.webdav_user = _zotero_env("ZOTERO_WEBDAV_USER", library_id)
+        self.webdav_password = _zotero_env("ZOTERO_WEBDAV_PASSWORD", library_id)
         self._files: dict[tuple[str, str], _ZoteroFile] = {}
         self._text_cache: dict[str, str] = {}
 
@@ -387,5 +423,16 @@ class ZoteroConnector(BaseConnector):
 
 
 def parse_zotero_source(source: str) -> dict[str, str | None]:
-    hierarchy = source.removeprefix("zotero:")
-    return {"hierarchy": None if hierarchy in {"", "*"} else hierarchy}
+    rest = source.removeprefix("zotero:")
+    library_id: str | None = None
+    # Optional library ID prefix: "zotero:123456:Collection%%Sub". A numeric
+    # segment before the first colon is treated as the library ID, allowing
+    # multiple Zotero libraries in a single .oikb.yaml. Plain collection paths
+    # (e.g. "zotero:Research%%ML") are unchanged — collection names are not
+    # purely numeric, so there is no ambiguity.
+    if ":" in rest:
+        head, tail = rest.split(":", 1)
+        if head.isdigit():
+            library_id = head
+            rest = tail
+    return {"hierarchy": None if rest in {"", "*"} else rest, "library_id": library_id}
