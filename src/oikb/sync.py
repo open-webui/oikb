@@ -350,6 +350,12 @@ def _run_sync_inner(
             check_stop()
             try:
                 content = connector.read_file(path, filename)
+                if not content:
+                    if progress is not None:
+                        progress.update(task_id, advance=1, description=f"[yellow]⚠ {display}[/yellow]")
+                    else:
+                        click.echo(click.style(f"  ⚠ {display}: empty content, skipping", fg="yellow"), err=True)
+                    return ("warning", f"{display}: empty content, skipping")
                 check_stop()
                 directory_id = directory_map.get(path) if path else None
                 client.upload_file(
