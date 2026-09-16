@@ -90,6 +90,32 @@ class OikbClient:
         resp.raise_for_status()
         return resp.json()
 
+    def get_file_status(self, file_id: str) -> str | None:
+        """GET /files/{id}/process/status.
+
+        Returns 'pending' | 'processing' | 'completed' | 'failed',
+        or None if the file no longer exists server-side (404).
+        """
+        resp = self._http.get(f"/files/{file_id}/process/status")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json().get("status")
+
+    def add_file_to_kb(
+        self,
+        kb_id: str,
+        file_id: str,
+        directory_id: str | None = None,
+    ) -> dict[str, Any]:
+        """POST /knowledge/{id}/file/add — link an existing file to a KB."""
+        payload: dict[str, Any] = {"file_id": file_id}
+        if directory_id:
+            payload["directory_id"] = directory_id
+        resp = self._http.post(f"/knowledge/{kb_id}/file/add", json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
     # ── Directory management ────────────────────────────────────
 
     def create_directory(

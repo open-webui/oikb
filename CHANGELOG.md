@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Sync loops on failed ingestion**: files that Open WebUI rejects during ingestion were re-uploaded on every sync cycle, accumulating orphaned file records and disk usage server-side (#106). oikb now records permanently rejected uploads (HTTP 4xx) in its state database and skips them until the source file's checksum changes. Since uploads are ingested asynchronously (HTTP 200, then silent failure), accepted uploads are also tracked: when the diff reports a tracked file again, oikb checks its server-side processing status instead of re-uploading — failed ingestions become permanent skips, files still processing are skipped for that run, and processed-but-unlinked files are re-linked in place instead of being uploaded again.
+
+### Added
+
+- **`oikb failures` command**: list uploads that were permanently rejected by the server (`--kb-id` to filter, `--clear` to forget the records and retry them on the next sync, `--json` for machine-readable output).
+
 ## [0.4.0] - 2026-07-17
 
 ### Added
