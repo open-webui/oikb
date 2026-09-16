@@ -173,7 +173,7 @@ def _get_token_via_certificate(
     """
     try:
         from cryptography import x509
-        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives import hashes, serialization
     except ImportError:
         raise ImportError(
             "Certificate auth requires the 'cryptography' package.\n"
@@ -201,9 +201,11 @@ def _get_token_via_certificate(
     # Load private key.
     private_key = serialization.load_pem_private_key(pem_data, password=password_bytes)
 
-    # Load certificate to extract thumbprint.
+    # Load certificate to extract thumbprint. The x5t header identifies the registered
+    # key by its SHA-1 thumbprint, whatever algorithm the certificate itself is signed
+    # with — a SHA-256 digest here is rejected with AADSTS700027 ("key was not found").
     cert = x509.load_pem_x509_certificate(pem_data)
-    thumbprint = cert.fingerprint(cert.signature_hash_algorithm or x509.hashes.SHA256())
+    thumbprint = cert.fingerprint(hashes.SHA1())
     x5t = base64.urlsafe_b64encode(thumbprint).rstrip(b"=").decode("ascii")
 
     # Build JWT assertion.
