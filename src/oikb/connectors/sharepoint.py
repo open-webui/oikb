@@ -18,6 +18,7 @@ import os
 import time
 import uuid
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -113,7 +114,7 @@ class SharePointConnector(BaseConnector):
         return entries
 
     def _walk_folder(self, folder_path: str, prefix: str, entries: list[ManifestEntry]) -> None:
-        url = f"/drives/{self._drive_id}/root/children" if folder_path == "/" else f"/drives/{self._drive_id}/root:/{folder_path}:/children"
+        url = f"/drives/{self._drive_id}/root/children" if folder_path == "/" else f"/drives/{self._drive_id}/root:/{quote(folder_path)}:/children"
         resp = self._http.get(url)
         resp.raise_for_status()
 
@@ -133,7 +134,7 @@ class SharePointConnector(BaseConnector):
 
     def read_file(self, path: str, filename: str) -> bytes:
         file_path = f"{path}/{filename}" if path else filename
-        resp = self._http.get(f"/drives/{self._drive_id}/root:/{file_path}:/content")
+        resp = self._http.get(f"/drives/{self._drive_id}/root:/{quote(file_path)}:/content")
         resp.raise_for_status()
         return resp.content
 
