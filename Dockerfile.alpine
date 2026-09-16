@@ -1,10 +1,13 @@
-FROM python:3.11-slim-bookworm AS builder
+FROM python:3.11-alpine3.23 AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 ENV UV_LINK_MODE=copy
+ENV LD_LIBRARY_PATH=/usr/lib/llvm21/lib
 
 WORKDIR /app
+
+RUN apk add --no-cache build-base clang21-libclang pkgconf
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
@@ -17,18 +20,16 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --extra all --no-dev
 
 
-FROM python:3.11-slim-bookworm
+FROM python:3.11-alpine3.23
 LABEL org.opencontainers.image.description="CLI tool for syncing content to Open WebUI Knowledge Bases" \
       org.opencontainers.image.source="https://github.com/open-webui/oikb" \
       org.opencontainers.image.vendor="Open WebUI Inc." \
       org.opencontainers.image.licenses="MIT"
 ENV PYTHONUNBUFFERED=1
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid 1000 appuser \
-    && useradd --uid 1000 --gid appuser --create-home --shell /usr/sbin/nologin appuser
+RUN apk add --no-cache ca-certificates libstdc++ \
+    && addgroup -g 1000 appuser \
+    && adduser -D -u 1000 -G appuser appuser
 
 COPY --from=builder --chown=appuser:appuser /app /app
 

@@ -21,7 +21,7 @@ from rich.progress import (
 )
 
 from oikb.client import OikbClient
-from oikb.connectors import BaseConnector, ManifestEntry
+from oikb.connectors import BaseConnector, ManifestEntry, SourceFileUnavailable
 
 # Stderr console for progress output (keeps stdout clean for piping).
 _console = Console(stderr=True)
@@ -38,6 +38,7 @@ class SyncResult:
     dirs_created: int = 0
     dirs_removed: int = 0
     errors: list[str] | None = None
+    warnings: list[str] | None = None
 
     @property
     def total_changes(self) -> int:
@@ -58,6 +59,10 @@ class SyncResult:
         if self.dirs_removed:
             parts.append(f"{self.dirs_removed} dirs removed")
         return ", ".join(parts) if parts else "nothing to do"
+
+
+class SyncCancelled(Exception):
+    """Raised when a running sync is asked to stop."""
 
 
 def parse_size(value: str | int | None) -> int | None:
@@ -135,6 +140,7 @@ def run_sync(
     quiet: bool = False,
     manifest_filter: Callable[[list[ManifestEntry]], list[ManifestEntry]] | None = None,
     concurrency: int = 1,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> SyncResult:
     """Execute a full incremental sync.
 
@@ -148,11 +154,12 @@ def run_sync(
     """
     result = SyncResult()
     result.errors = []
+    result.warnings = []
 
     try:
         return _run_sync_inner(
             client, connector, kb_id, dry_run, verbose, quiet,
-            manifest_filter, concurrency, result,
+            manifest_filter, concurrency, result, cancel_requested,
         )
     finally:
         connector.close()
@@ -168,11 +175,17 @@ def _run_sync_inner(
     manifest_filter: Callable[[list[ManifestEntry]], list[ManifestEntry]] | None,
     concurrency: int,
     result: SyncResult,
+    cancel_requested: Callable[[], bool] | None,
 ) -> SyncResult:
     """Inner sync logic, separated for clean connector cleanup."""
     show_progress = not quiet and not dry_run
 
+    def check_stop() -> None:
+        if cancel_requested and cancel_requested():
+            raise SyncCancelled("sync cancelled")
+
     # ── 1. Build manifest ──────────────────────────────────────
+    check_stop()
     if show_progress:
         with _console.status("[bold blue]Scanning source..."):
             manifest = connector.build_manifest()
@@ -185,6 +198,7 @@ def _run_sync_inner(
             click.echo(f"  {len(manifest)} files found", err=True)
 
     # ── 2. Apply filter ────────────────────────────────────────
+    check_stop()
     if manifest_filter:
         manifest = manifest_filter(manifest)
         if show_progress:
@@ -198,6 +212,7 @@ def _run_sync_inner(
         return result
 
     # ── 3. Compute diff ────────────────────────────────────────
+    check_stop()
     if show_progress:
         with _console.status("[bold blue]Computing diff..."):
             diff = client.sync_diff(kb_id, [e.to_dict() for e in manifest])
@@ -274,6 +289,7 @@ def _run_sync_inner(
     ]
 
     if stale_file_ids or rmdir:
+        check_stop()
         if show_progress:
             with _console.status(f"[bold blue]Cleaning up {len(stale_file_ids)} stale files..."):
                 client.sync_cleanup(kb_id, stale_file_ids, rmdir if rmdir else None)
@@ -289,6 +305,7 @@ def _run_sync_inner(
 
     # ── 5. Create missing directories ──────────────────────────
     for dir_path in mkdir:
+        check_stop()
         segments = dir_path.split("/")
         name = segments[-1]
         parent_path = "/".join(segments[:-1])
@@ -314,8 +331,8 @@ def _run_sync_inner(
 
     def _upload_one(
         i: int, entry: dict, change_type: str, progress: Progress | None, task_id: Any,
-    ) -> str | None:
-        """Upload a single file with retry. Returns error string or None."""
+    ) -> tuple[str, str | None]:
+        """Upload a single file with retry."""
         filename = entry["filename"]
         path = entry.get("path", "")
         display = f"{path}/{filename}" if path else filename
@@ -323,14 +340,23 @@ def _run_sync_inner(
         if verbose and not progress:
             click.echo(f"  [{i}/{len(files_to_upload)}] {display}", err=True)
 
+        check_stop()
         manifest_entry = manifest_by_key.get((path, filename))
         if not manifest_entry:
-            return f"File not in manifest: {display}"
+            return ("error", f"File not in manifest: {display}")
 
         last_err: Exception | None = None
         for attempt in range(3):
+            check_stop()
             try:
                 content = connector.read_file(path, filename)
+                if not content:
+                    if progress is not None:
+                        progress.update(task_id, advance=1, description=f"[yellow]⚠ {display}[/yellow]")
+                    else:
+                        click.echo(click.style(f"  ⚠ {display}: empty content, skipping", fg="yellow"), err=True)
+                    return ("warning", f"{display}: empty content, skipping")
+                check_stop()
                 directory_id = directory_map.get(path) if path else None
                 client.upload_file(
                     file_content=content,
@@ -341,14 +367,24 @@ def _run_sync_inner(
                 )
                 if progress is not None:
                     progress.update(task_id, advance=1, description=f"[cyan]{display}[/cyan]")
-                return change_type  # success
+                return (change_type, None)
+            except SourceFileUnavailable as e:
+                message = f"{display}: {e}"
+                if progress is not None:
+                    progress.update(task_id, advance=1, description=f"[yellow]⚠ {display}[/yellow]")
+                else:
+                    click.echo(click.style(f"  ⚠ {message}", fg="yellow"), err=True)
+                return ("warning", message)
             except httpx.HTTPStatusError as e:
                 if e.response.status_code >= 500 and attempt < 2:
                     time.sleep(2 ** attempt)
+                    check_stop()
                     last_err = e
                     continue
                 last_err = e
                 break
+            except SyncCancelled:
+                raise
             except Exception as e:
                 last_err = e
                 break
@@ -357,16 +393,19 @@ def _run_sync_inner(
             progress.update(task_id, advance=1, description=f"[red]✗ {display}[/red]")
         else:
             click.echo(click.style(f"  ✗ {display}: {last_err}", fg="red"), err=True)
-        return f"{display}: {last_err}"
+        return ("error", f"{display}: {last_err}")
 
-    def _tally(outcome: str | None) -> None:
+    def _tally(outcome: tuple[str, str | None]) -> None:
         """Update result counters from an upload outcome."""
-        if outcome == "added":
+        kind, message = outcome
+        if kind == "added":
             result.added += 1
-        elif outcome == "modified":
+        elif kind == "modified":
             result.modified += 1
-        elif outcome is not None:
-            result.errors.append(outcome)
+        elif kind == "warning" and message is not None:
+            result.warnings.append(message)
+        elif message is not None:
+            result.errors.append(message)
 
     if show_progress:
         progress = Progress(

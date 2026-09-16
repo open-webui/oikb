@@ -39,6 +39,10 @@ class ManifestEntry:
         return self.filename
 
 
+class SourceFileUnavailable(Exception):
+    """Raised when a source advertises a file but cannot provide its bytes."""
+
+
 class BaseConnector(ABC):
     """Abstract base for all content source connectors.
 

@@ -1,0 +1,224 @@
+name: Publish to PyPI
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+
+concurrency:
+  group: pypi-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pkg.outputs.version }}
+      publish_needed: ${{ steps.pypi.outputs.publish_needed }}
+      release_assets_needed: ${{ steps.release.outputs.release_assets_needed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: pkg
+        run: |
+          VERSION=$(python3 -c "
+          import re, pathlib
+          text = pathlib.Path('pyproject.toml').read_text()
+          m = re.search(r'^version\s*=\s*\"([^\"]+)\"', text, re.M)
+          print(m.group(1))
+          ")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check PyPI
+        id: pypi
+        env:
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import urllib.error
+          import urllib.request
+
+          version = os.environ["VERSION"]
+          exists = False
+          try:
+              with urllib.request.urlopen(f"https://pypi.org/pypi/oikb/{version}/json", timeout=15):
+                  exists = True
+          except urllib.error.HTTPError as exc:
+              if exc.code != 404:
+                  raise
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"publish_needed={'false' if exists else 'true'}\n")
+          print(f"Version {version} {'already exists on PyPI' if exists else 'is not on PyPI'}")
+          PY
+
+      - name: Check GitHub release assets
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected=(
+            "oikb-${VERSION}-py3-none-any.whl"
+            "oikb-${VERSION}-linux-wheelhouse.tar.gz"
+            "SHA256SUMS"
+          )
+
+          assets="$(gh release view "v${VERSION}" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+          missing=false
+          for name in "${expected[@]}"; do
+            if ! grep -Fx "$name" <<< "$assets" >/dev/null; then
+              missing=true
+              echo "Missing release asset: $name"
+            fi
+          done
+
+          echo "release_assets_needed=$missing" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: preflight
+    if: github.ref == 'refs/heads/release' && (needs.preflight.outputs.publish_needed == 'true' || needs.preflight.outputs.release_assets_needed == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build package
+        run: python -m build --wheel
+
+      - name: Build Linux wheelhouse
+        run: |
+          VERSION="${{ needs.preflight.outputs.version }}"
+          WHEEL="dist/oikb-${VERSION}-py3-none-any.whl"
+          cp "$WHEEL" .
+          mkdir -p wheelhouse
+          python -m pip download --dest wheelhouse "${WHEEL}[all]"
+          tar -czf "oikb-${VERSION}-linux-wheelhouse.tar.gz" -C wheelhouse .
+
+      - name: Generate checksums
+        run: |
+          sha256sum oikb-*.whl oikb-*-linux-wheelhouse.tar.gz > SHA256SUMS
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            oikb-*.whl
+            oikb-*-linux-wheelhouse.tar.gz
+            SHA256SUMS
+
+  publish:
+    needs: [preflight, build]
+    if: github.ref == 'refs/heads/release' && needs.preflight.outputs.publish_needed == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Check if version already on PyPI
+        id: check
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import urllib.error
+          import urllib.request
+
+          version = os.environ["VERSION"]
+          exists = False
+          try:
+              with urllib.request.urlopen(f"https://pypi.org/pypi/oikb/{version}/json", timeout=15):
+                  exists = True
+          except urllib.error.HTTPError as exc:
+              if exc.code != 404:
+                  raise
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"skip={'true' if exists else 'false'}\n")
+          print(f"Version {version} {'already exists on PyPI, skipping publish' if exists else 'is not on PyPI'}")
+          PY
+
+      - name: Publish to PyPI
+        if: steps.check.outputs.skip != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No API token needed - uses OIDC trusted publishing.
+        # Configure at: https://pypi.org/manage/project/oikb/settings/publishing/
+
+  github-release-assets:
+    needs: [preflight, build]
+    if: github.ref == 'refs/heads/release' && needs.preflight.outputs.release_assets_needed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets/
+
+      - name: Attach GitHub release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          ls -lah release-assets
+          mapfile -t files < <(find release-assets -maxdepth 1 -type f -print | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No release asset files found" >&2
+            exit 1
+          fi
+
+          for attempt in {1..60}; do
+            if gh release view "v${VERSION}" >/dev/null 2>&1; then
+              gh release upload "v${VERSION}" "${files[@]}" --clobber
+
+              assets="$(gh release view "v${VERSION}" --json assets --jq '.assets[].name')"
+              for expected in \
+                "oikb-${VERSION}-py3-none-any.whl" \
+                "oikb-${VERSION}-linux-wheelhouse.tar.gz" \
+                "SHA256SUMS"
+              do
+                if ! grep -Fx "$expected" <<< "$assets" >/dev/null; then
+                  echo "Missing release asset after upload: $expected" >&2
+                  exit 1
+                fi
+              done
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "GitHub release v${VERSION} was not found" >&2
+          exit 1

@@ -20,8 +20,10 @@ A complete guide to syncing content into Open WebUI Knowledge Bases.
   - [GitHub](#github)
   - [GitLab / Bitbucket](#gitlab--bitbucket)
   - [Confluence](#confluence)
+  - [BookStack](#bookstack)
   - [Cloud Storage (S3 / GCS / Azure)](#cloud-storage-s3--gcs--azure)
   - [SharePoint](#sharepoint)
+  - [Nextcloud](#nextcloud)
   - [All Connectors](#all-connectors)
 - [Filtering](#filtering)
   - [Include / Exclude Globs](#include--exclude-globs)
@@ -245,9 +247,51 @@ Requires `GITLAB_TOKEN` or `BITBUCKET_TOKEN` respectively.
 
 ```bash
 oikb sync confluence:SPACE_KEY --kb-id your-kb-id
+
+# Preserve the Confluence page hierarchy in manifest paths.
+oikb sync 'confluence:SPACE_KEY?structure=hierarchical' --kb-id your-kb-id
 ```
 
-Requires `CONFLUENCE_URL`, `CONFLUENCE_USERNAME`, and `CONFLUENCE_API_TOKEN`.
+With hierarchical structure enabled, existing `filter.include` and
+`filter.exclude` patterns can select page trees, for example
+`Engineering/Runbooks*`.
+
+Requires `CONFLUENCE_URL`, `CONFLUENCE_USER`, and `CONFLUENCE_TOKEN`.
+
+### BookStack
+
+```bash
+# Sync all pages from all BookStack books as Markdown files.
+oikb sync bookstack: --kb-id your-kb-id
+
+# Sync one specific BookStack page.
+oikb sync 'bookstack:pages?include_ids=12' --kb-id your-kb-id
+
+# Sync one BookStack book as chapter files; pages outside chapters remain page files.
+oikb sync 'bookstack:books?include_ids=12&output=chapters' --kb-id your-kb-id
+
+# Sync one whole BookStack book as a PDF file.
+oikb sync 'bookstack:books?include_ids=12&output=books&format=pdf' --kb-id your-kb-id
+
+# Sync all pages from one shelf and preserve shelf/book/chapter paths.
+oikb sync 'bookstack:shelves?include_ids=5&structure=hierarchical' --kb-id your-kb-id
+```
+
+Requires `BOOKSTACK_URL`, `BOOKSTACK_TOKEN_ID`, and `BOOKSTACK_TOKEN_SECRET`.
+
+Defaults are `bookstack:books`, `output=pages`, `format=md`, and `structure=flat`.
+
+| Parameter | Values | Description |
+|---|---|---|
+| `output` | `pages`, `chapters`, `books` | Exports individual pages, chapters where pages are grouped in chapters, or whole books. |
+| `format` | `txt`, `md`, `html`, `pdf` | Exported file format. |
+| `structure` | `flat`, `hierarchical` | Keeps files flat or mirrors shelf/book/chapter paths where available. |
+| `include_ids` | comma-separated IDs | Limits the selected pages, books, or shelves. |
+| `exclude_ids` | comma-separated IDs | Excludes selected pages, books, or shelves. |
+
+Use `bookstack:pages`, `bookstack:books`, or `bookstack:shelves` to select what IDs refer to. `bookstack:` defaults to `bookstack:books`.
+When `bookstack:pages` is used, `output` is always treated as `pages`.
+With `output=chapters`, pages outside chapters remain individual page exports.
 
 ### Cloud Storage (S3 / GCS / Azure)
 
@@ -314,14 +358,72 @@ sources:
     interval: 1h
 ```
 
+### Nextcloud
+
+Sync a Nextcloud folder via WebDAV:
+
+```bash
+export NEXTCLOUD_URL=https://nextcloud.example.com
+export NEXTCLOUD_USER=svc_docs
+export NEXTCLOUD_PASSWORD=your-app-password
+
+oikb sync "nextcloud:/Documents" --kb-id your-kb-id
+oikb sync "nextcloud:/Team/Engineering Handbook" --kb-id your-kb-id
+```
+
+Use a Nextcloud app password when possible. The connector resolves the
+authenticated DAV user ID through the Nextcloud OCS user endpoint, so it works
+with both local users and LDAP-backed accounts.
+
+#### .oikb.yaml example
+
+```yaml
+sources:
+  - name: team-docs
+    source: "nextcloud:/Documents"
+    kb-id: abc123
+    interval: 1h
+```
+
+### Zotero
+
+Sync PDF attachment text from Zotero collections into KB directories. A bare
+`zotero:` syncs all top-level collections and root library items into
+`_unfiled`; use `%%` for nested collections.
+
+```bash
+pip install oikb[zotero]
+
+export ZOTERO_LIBRARY_ID=123456
+export ZOTERO_API_KEY=...
+
+oikb sync "zotero:" --kb-id your-kb-id # syncs all top-level collections plus _unfiled
+oikb sync "zotero:Research" --kb-id your-kb-id # syncs only the 'Research' collection
+oikb sync "zotero:Research%%Machine Learning" --kb-id your-kb-id # syncs only the 'Machine Learning' subcollection
+
+```
+
+Optional settings:
+
+| Variable | Description |
+|---|---|
+| `ZOTERO_LIBRARY_TYPE` | `user` (default) or `group` |
+| `ZOTERO_INCLUDE_NOTES` | Append child notes when true |
+| `ZOTERO_INCLUDE_ANNOTATIONS` | Append PDF annotation text/comments when true |
+| `ZOTERO_CHECKSUM` | `version` (default) or `content` |
+| `ZOTERO_EXCLUDE` | Comma-separated collection paths to skip |
+| `ZOTERO_UNFILED_DIR` | Directory for root library items, default `_unfiled` |
+| `ZOTERO_WEBDAV_URL` | WebDAV Zotero storage base; fetches `<attachment-key>.zip` on Zotero file 404 |
+| `ZOTERO_WEBDAV_USER` / `ZOTERO_WEBDAV_PASSWORD` | WebDAV credentials |
+
 ### All Connectors
 
-44 connectors available. See the full list:
+46 connectors available. See the full list:
 
 | Category | Sources |
 |---|---|
 | **Git** | GitHub, GitLab, Bitbucket |
-| **Cloud Storage** | S3, GCS, Azure Blob, Dropbox, R2, Google Drive, SharePoint, Egnyte, Oracle Cloud |
+| **Cloud Storage** | S3, GCS, Azure Blob, Dropbox, R2, Google Drive, SharePoint, Nextcloud, Egnyte, Oracle Cloud |
 | **Wikis & KBs** | Confluence, Notion, BookStack, Discourse, GitBook, Guru, Outline, Slab, Document360, DokuWiki, Google Sites |
 | **Ticketing** | Jira, Linear, Zendesk, Freshdesk, Asana, ClickUp, Airtable, ServiceNow, ProductBoard |
 | **Messaging** | Slack, Discord, Microsoft Teams, Gmail, Zulip |
@@ -329,6 +431,7 @@ sources:
 | **Forums** | XenForo |
 | **Sales & CRM** | Salesforce, HubSpot |
 | **Web** | Website / Sitemap crawler |
+| **Research** | Zotero |
 
 ---
 
@@ -595,9 +698,11 @@ services:
       - open-webui
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/health/ready"]
       interval: 30s
       timeout: 5s
+      retries: 3
+      start_period: 15s
 ```
 
 ### GitHub Actions

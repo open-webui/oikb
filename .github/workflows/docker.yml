@@ -1,133 +1,292 @@
-name: Build Docker Image
+name: Docker (GHCR)
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: [main, release]
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE: ghcr.io/${{ github.repository }}
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
-  build:
+  read-version:
+    if: github.ref == 'refs/heads/release'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - linux/amd64
-          - linux/arm64
-    permissions:
-      contents: read
-      packages: write
-
+    outputs:
+      version: ${{ steps.pkg.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-qemu-action@v3
+      - name: Read version
+        id: pkg
+        run: |
+          VERSION=$(python3 -c "
+          import re, pathlib
+          text = pathlib.Path('pyproject.toml').read_text()
+          m = re.search(r'^version\s*=\s*\"([^\"]+)\"', text, re.M)
+          print(m.group(1))
+          ")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - uses: docker/setup-buildx-action@v3
+  build-dev:
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+            flavor: default
+            dockerfile: Dockerfile
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+            flavor: default
+            dockerfile: Dockerfile
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+            flavor: alpine
+            dockerfile: Dockerfile.alpine
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+            flavor: alpine
+            dockerfile: Dockerfile.alpine
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-
-      - uses: docker/build-push-action@v5
+      - name: Build and push ${{ matrix.platform }} dev image by digest
         id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
-          labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
-          cache-from: type=gha,scope=${{ matrix.platform }}
-          cache-to: type=gha,scope=${{ matrix.platform }},mode=max
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=dev-${{ matrix.flavor }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=dev-${{ matrix.flavor }}-${{ matrix.arch }}
 
       - name: Export digest
-        if: github.event_name != 'pull_request'
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
-      - uses: actions/upload-artifact@v4
-        if: github.event_name != 'pull_request'
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          name: digests-dev-${{ matrix.flavor }}-${{ matrix.arch }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
-  merge:
+  merge-dev:
+    if: github.ref == 'refs/heads/main'
+    needs: build-dev
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
-    needs: build
-    permissions:
-      contents: read
-      packages: write
-
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Get version from pyproject.toml
-        id: version
-        run: |
-          VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          MAJOR_MINOR=$(echo "$VERSION" | cut -d. -f1,2)
-          echo "major_minor=$MAJOR_MINOR" >> "$GITHUB_OUTPUT"
-          if git rev-parse "refs/tags/v$VERSION" >/dev/null 2>&1; then
-            TAG_SHA=$(git rev-list -n 1 "v$VERSION")
-            if [ "$TAG_SHA" = "${{ github.sha }}" ]; then
-              echo "is_new_version=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "is_new_version=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "is_new_version=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - uses: actions/download-artifact@v4
+      - name: Download digests
+        uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digests-*
+          pattern: digests-dev-default-*
           merge-multiple: true
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.is_new_version }}
-            type=raw,value=${{ steps.version.outputs.major_minor }},enable=${{ steps.version.outputs.is_new_version }}
-            type=sha
-
-      - name: Create manifest list and push
+      - name: Create dev multi-arch manifest
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+          SHORT_SHA="${GITHUB_SHA::7}"
+          tags=("${{ env.IMAGE }}:dev" "${{ env.IMAGE }}:dev-${SHORT_SHA}")
+          docker buildx imagetools create $(printf -- '-t %s ' "${tags[@]}") \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
 
-      - name: Inspect image
+  merge-dev-alpine:
+    if: github.ref == 'refs/heads/main'
+    needs: build-dev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-dev-alpine-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create dev Alpine multi-arch manifest
+        working-directory: /tmp/digests
         run: |
-          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+          SHORT_SHA="${GITHUB_SHA::7}"
+          tags=("${{ env.IMAGE }}:dev-alpine" "${{ env.IMAGE }}:dev-${SHORT_SHA}-alpine")
+          docker buildx imagetools create $(printf -- '-t %s ' "${tags[@]}") \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+  build-release:
+    needs: read-version
+    if: github.ref == 'refs/heads/release'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+            flavor: default
+            dockerfile: Dockerfile
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+            flavor: default
+            dockerfile: Dockerfile
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+            flavor: alpine
+            dockerfile: Dockerfile.alpine
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+            flavor: alpine
+            dockerfile: Dockerfile.alpine
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.platform }} release image by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=release-${{ matrix.flavor }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.flavor }}-${{ matrix.arch }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-release-${{ matrix.flavor }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-release:
+    needs: [read-version, build-release]
+    if: github.ref == 'refs/heads/release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-release-default-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create release multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          VERSION="${{ needs.read-version.outputs.version }}"
+          MAJOR_MINOR="${VERSION%.*}"
+          tags=("${{ env.IMAGE }}:latest" "${{ env.IMAGE }}:${VERSION}" "${{ env.IMAGE }}:${MAJOR_MINOR}")
+          docker buildx imagetools create $(printf -- '-t %s ' "${tags[@]}") \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+  merge-release-alpine:
+    needs: [read-version, build-release]
+    if: github.ref == 'refs/heads/release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-release-alpine-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create release Alpine multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          VERSION="${{ needs.read-version.outputs.version }}"
+          MAJOR_MINOR="${VERSION%.*}"
+          tags=("${{ env.IMAGE }}:alpine" "${{ env.IMAGE }}:latest-alpine" "${{ env.IMAGE }}:${VERSION}-alpine" "${{ env.IMAGE }}:${MAJOR_MINOR}-alpine")
+          docker buildx imagetools create $(printf -- '-t %s ' "${tags[@]}") \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)

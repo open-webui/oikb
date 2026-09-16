@@ -1,51 +1,53 @@
+# -----------------------------------------------------------------------------
+# Release - Create GitHub release from CHANGELOG, trigger Docker builds
+# Runs on pushes to the release branch when version changes.
+# -----------------------------------------------------------------------------
 name: Release
 
 on:
   push:
-    branches: [main]
-    paths:
-      - pyproject.toml
+    branches: [release]
 
-permissions:
-  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  # Create release and trigger downstream workflows.
+  publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Get version from pyproject.toml
-        id: version
+      - name: Read version
+        id: pkg
         run: |
-          VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          VERSION=$(python3 -c "
+          import re, pathlib
+          text = pathlib.Path('pyproject.toml').read_text()
+          m = re.search(r'^version\s*=\s*\"([^\"]+)\"', text, re.M)
+          print(m.group(1))
+          ")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Check if tag exists
-        id: check
+      - name: Extract release notes from CHANGELOG
         run: |
-          if git rev-parse "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
+          VER="${{ steps.pkg.outputs.version }}"
+          awk "/^## \[${VER}\]/{found=1; next} /^## \[/{if(found) exit} found{print}" \
+            CHANGELOG.md > /tmp/release-notes.md
 
-      - name: Extract changelog
-        if: steps.check.outputs.exists == 'false'
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          awk "/^## \[${VERSION}\]/{found=1; next} /^## \[/{if(found) exit} found{print}" CHANGELOG.md > /tmp/release-notes.md
-
-      - name: Create tag and GitHub Release
-        if: steps.check.outputs.exists == 'false'
+      - name: Publish GitHub release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git tag "${{ steps.version.outputs.tag }}"
-          git push origin "${{ steps.version.outputs.tag }}"
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --title "${{ steps.version.outputs.tag }}" \
-            --notes-file /tmp/release-notes.md
+          if gh release view "v${{ steps.pkg.outputs.version }}" &>/dev/null; then
+            echo "Release v${{ steps.pkg.outputs.version }} already exists - skipping creation"
+          else
+            gh release create "v${{ steps.pkg.outputs.version }}" \
+              --title "v${{ steps.pkg.outputs.version }}" \
+              --notes-file /tmp/release-notes.md
+          fi

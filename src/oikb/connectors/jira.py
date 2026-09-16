@@ -61,23 +61,35 @@ class JiraConnector(BaseConnector):
     def build_manifest(self) -> list[ManifestEntry]:
         entries: list[ManifestEntry] = []
         api_fields = list(set(self._fields + ["summary", "updated"]))
-        start = 0
+        next_page_token = None
         fetched = 0
+
         while True:
             max_results = 100
+
             if self._limit:
                 max_results = min(100, self._limit - fetched)
-                if max_results <= 0:
-                    break
+
+            if max_results <= 0:
+                break
+
+            params = {
+                "jql": self._jql,
+                "maxResults": max_results,
+                "fields": ",".join(api_fields),
+            }
+
+            if next_page_token:
+                params["nextPageToken"] = next_page_token
 
             resp = self._http.get(
-                "/rest/api/3/search",
-                params={"jql": self._jql, "startAt": start, "maxResults": max_results,
-                        "fields": ",".join(api_fields)},
+                "/rest/api/3/search/jql",
+                params=params,
             )
             resp.raise_for_status()
             data = resp.json()
             issues = data.get("issues", [])
+
             for issue in issues:
                 key = issue["key"]
                 fields = issue["fields"]
@@ -88,10 +100,14 @@ class JiraConnector(BaseConnector):
                 filename = f"{key}{ext}"
                 self._issue_cache[filename] = text
                 entries.append(ManifestEntry(filename=filename, path="", checksum=checksum, size=len(text.encode())))
+
             fetched += len(issues)
-            if start + len(issues) >= data.get("total", 0):
+
+            next_page_token = data.get("nextPageToken")
+
+            if not issues or not next_page_token:
                 break
-            start += len(issues)
+
         entries.sort(key=lambda e: e.display_path)
         return entries
 

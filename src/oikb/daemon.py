@@ -263,11 +263,12 @@ async def _run_entry(entry: dict, dry_run: bool = False) -> dict | None:
 async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
     """Inner sync logic, called under the per-KB lock."""
     from oikb.cli import _make_client, _resolve_connector
-    from oikb.sync import run_sync
+    from oikb.sync import SyncCancelled, run_sync
 
     source = entry["source"]
     kb_id = entry["kb-id"]
     started_at = time.time()
+    client = None
 
     _scheduler_state[source] = {
         **_scheduler_state.get(source, {}),
@@ -281,6 +282,7 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
             source,
             branch=entry.get("branch"),
             path=entry.get("path"),
+            auth=entry.get("auth", {}),
         )
         client = _make_client(
             url=entry.get("url"),
@@ -309,8 +311,8 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
             quiet=True,
             manifest_filter=mf,
             concurrency=entry.get("concurrency", 1),
+            cancel_requested=_shutdown_event.is_set if _shutdown_event else None,
         )
-        client.close()
 
         if dry_run:
             return {
@@ -318,6 +320,8 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
                 "modified": result.modified,
                 "deleted": result.deleted,
                 "unmodified": result.unmodified,
+                "warnings": result.warnings or [],
+                "errors": result.errors or [],
                 "summary": result.summary(),
             }
 
@@ -334,6 +338,7 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
             "files_modified": result.modified,
             "files_deleted": result.deleted,
             "unmodified": result.unmodified,
+            "warnings": result.warnings or [],
             "errors": result.errors or [],
         }
 
@@ -351,12 +356,13 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
                 _history.log,
                 source=source,
                 kb_id=kb_id,
-                status="success",
+                status=status,
                 started_at=started_at,
                 files_added=result.added,
                 files_modified=result.modified,
                 files_deleted=result.deleted,
                 unmodified=result.unmodified,
+                error="\n".join(result.errors or []) or None,
             )
 
         log.info(
@@ -372,8 +378,17 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
             "files_added": result.added,
             "files_modified": result.modified,
             "files_deleted": result.deleted,
+            "warnings": result.warnings or [],
             "errors": result.errors or [],
         })
+
+    except SyncCancelled:
+        _scheduler_state[source] = {
+            "name": entry.get("name", source),
+            "status": "cancelled",
+            "last_sync": time.time(),
+        }
+        log.info(f"Sync cancelled for {source}")
 
     except Exception as e:
         _scheduler_state[source] = {
@@ -404,6 +419,9 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
             "status": "error",
             "error": str(e),
         })
+    finally:
+        if client:
+            client.close()
 
 
 async def _schedule_entry(entry: dict) -> None:
@@ -440,20 +458,24 @@ async def _schedule_entry(entry: dict) -> None:
             pass  # Time elapsed, run again.
 
 
-async def _run_scheduler(entries: list[dict]) -> None:
+def _request_shutdown() -> None:
+    if _shutdown_event:
+        _shutdown_event.set()
+
+
+async def _run_scheduler(entries: list[dict], handle_signals: bool = False) -> None:
     """Start all sync tasks and wait for shutdown."""
     global _shutdown_event
     _shutdown_event = asyncio.Event()
 
-    loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _shutdown_event.set)
+    if handle_signals:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _request_shutdown)
 
     tasks = [asyncio.create_task(_schedule_entry(e)) for e in entries]
 
     await _shutdown_event.wait()
-    for task in tasks:
-        task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
@@ -494,11 +516,22 @@ def start_daemon(
     webhook_entries = [e for e in entries if e.get("webhook")]
 
     if no_server:
-        asyncio.run(_run_scheduler(entries))
+        asyncio.run(_run_scheduler(entries, handle_signals=True))
     else:
         @app.on_event("startup")
         async def _startup():
-            asyncio.create_task(_run_scheduler(entries))
+            app.state.scheduler_task = asyncio.create_task(_run_scheduler(entries))
+
+        @app.on_event("shutdown")
+        async def _shutdown():
+            _request_shutdown()
+            task = getattr(app.state, "scheduler_task", None)
+            if task:
+                try:
+                    await asyncio.wait_for(task, timeout=5)
+                except asyncio.TimeoutError:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
 
         click.echo(f"oikb daemon listening on port {port}")
         click.echo(f"  {len(entries)} source(s) configured")

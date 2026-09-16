@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] - 2026-07-17
+
+### Added
+
+- **Nextcloud**: sync folders from Nextcloud using app-password login. Empty or missing folders are handled cleanly instead of stopping the run.
+- **Zotero**: sync Zotero PDF attachment text into Knowledge Bases. Supports whole libraries, nested collections, unfiled items, optional notes, optional annotations, collection excludes, content checksums, and WebDAV fallback for stored PDFs.
+- **BookStack**: choose exactly what to sync from BookStack. You can sync selected pages, selected books, selected shelves, chapters, whole-book exports, Markdown, plain text, HTML, or PDF, with flat or folder-style paths.
+- **GitLab wikis**: sync project wiki pages with `gitlab:group/project?wiki=true`, including subgroup projects and older GitLab installs that do not return page content in the list response.
+- **Automatic publishing**: pushing a version bump and changelog entry to the `release` branch now creates the GitHub release, publishes to PyPI, attaches release files, and publishes versioned Docker images.
+
+### Fixed
+
+- **SharePoint**: file downloads now follow Microsoft Graph redirects, so SharePoint files no longer fail with `302 Found`.
+- **Google Drive**: Shared Drives are now included when listing, finding, exporting, and downloading files.
+- **Jira**: large issue lists now keep paging until all matching issues are found.
+- **GitLab**: subgroup project paths are resolved more reliably, including sources that also include a folder path.
+- **Filesystem**: local sync now blocks paths that escape the configured source folder.
+- **Docker Compose**: the sample service now starts in `/app`, so the mounted `.oikb.yaml` is found where the container expects it.
+- **Docker health checks**: the bundled compose health check now works in the Alpine-based image.
+- **Sync warnings**: source files that are listed but unavailable can now show as warnings instead of failing the entire sync.
+- **CLI output**: multi-source syncs now print upload errors and warnings instead of only exiting with a failure code.
+- **Daemon status**: scheduled syncs now report partial success, warnings, and upload errors in health, history, dry-run, and notification output.
+- **Daemon shutdown**: Docker shutdown now asks running syncs to stop and waits briefly, instead of leaving background work loose.
+- **History storage**: concurrent daemon syncs now use separate SQLite connections, avoiding cross-thread database failures.
+- **Release version output**: `oikb --version` now matches the package version.
+
+### Changed
+
+- Docker images now use a smaller Alpine-based runtime and run as a non-root user.
+- The connector count is now 46 in the README and guide.
+- The guide now includes BookStack, Nextcloud, and Zotero examples.
+
 ## [0.3.6] - 2026-05-28
 
 ### Added
