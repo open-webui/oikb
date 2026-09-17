@@ -58,6 +58,7 @@ class SharePointConnector(BaseConnector):
         client_secret: str | None = None,
         certificate_path: str | None = None,
         certificate_password: str | None = None,
+        sharepoint_cloud: str = "commercial",
     ):
         self.site = site
         self.site_path = site_path.strip("/")
@@ -69,7 +70,7 @@ class SharePointConnector(BaseConnector):
         cert_path = certificate_path or os.environ.get("SHAREPOINT_CERTIFICATE_PATH", "")
         cert_password = certificate_password or os.environ.get("SHAREPOINT_CERTIFICATE_PASSWORD", "")
 
-        cloud = os.environ.get("SHAREPOINT_CLOUD", "commercial")
+        cloud = sharepoint_cloud or os.environ.get("SHAREPOINT_CLOUD", "commercial")
         if cloud not in _CLOUD_ENDPOINTS:
             raise ValueError(f"SHAREPOINT_CLOUD must be one of {list(_CLOUD_ENDPOINTS)}, got '{cloud}'")
         endpoints = _CLOUD_ENDPOINTS[cloud]
