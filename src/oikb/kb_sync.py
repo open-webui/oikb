@@ -51,6 +51,7 @@ def run_entries_sync(
     max_file_size: str | None = None,
     concurrency: int = 1,
     cancel_requested: Callable[[], bool] | None = None,
+    process_in_background: bool = True,
 ) -> SyncResult:
     """Scan and filter every source before allowing a KB-wide diff or deletion.
 
@@ -105,4 +106,5 @@ def run_entries_sync(
             quiet=quiet,
             concurrency=max(entry.get("concurrency", concurrency) for entry in entries),
             cancel_requested=cancel_requested,
+            process_in_background=process_in_background,
         )

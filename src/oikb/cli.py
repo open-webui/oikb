@@ -33,13 +33,14 @@ def common_options(f):
     return f
 
 
-def _make_client(url: str | None, token: str | None):
+def _make_client(url: str | None, token: str | None, timeout: float | None = None):
     """Create an OikbClient from resolved config."""
     from oikb.client import OikbClient
 
     return OikbClient(
         base_url=resolve_url(url),
         token=resolve_token(token),
+        timeout=timeout if timeout is not None else 120.0,
     )
 
 
@@ -427,6 +428,19 @@ def _parse_auth_option(pairs: tuple[str, ...]) -> dict[str, str]:
 @click.option("--concurrency", default=1, type=int, help="Parallel upload workers (default: 1, sequential).")
 @click.option("--max-file-size", default=None, help="Skip files larger than this (e.g. 50mb, 1gb).")
 @click.option(
+    "--upload-timeout",
+    default=None,
+    type=float,
+    help="HTTP timeout in seconds for the upload call (default 120).",
+)
+@click.option(
+    "--no-background",
+    "process_in_background",
+    flag_value=False,
+    default=None,
+    help="Run Open WebUI processing synchronously (do NOT run in background).",
+)
+@click.option(
     "--auth",
     "auth_pairs",
     multiple=True,
@@ -448,6 +462,8 @@ def sync(
     name: str | None,
     concurrency: int,
     max_file_size: str | None,
+    upload_timeout: float | None,
+    process_in_background: bool | None,
     auth_pairs: tuple[str, ...],
 ):
     """Incremental sync from a source to a Knowledge Base.
@@ -485,8 +501,14 @@ def sync(
         for group in groups:
             entry = group[0]
             client = None
+            # Resolve process_in_background: CLI --no-background > entry config > default True.
+            pib = process_in_background if process_in_background is not None else entry.get("process_in_background", True)
             try:
-                client = _make_client(url or entry.get("url"), token or entry.get("token"))
+                client = _make_client(
+                    url or entry.get("url"),
+                    token or entry.get("token"),
+                    timeout=upload_timeout if upload_timeout is not None else entry.get("upload_timeout"),
+                )
                 if not quiet:
                     click.echo(f"\n{'─' * 40}")
                     click.echo(f"Syncing: {', '.join(e['source'] for e in group)} → {entry['kb-id']}")
@@ -495,6 +517,7 @@ def sync(
                     client, group, resolve_connector=_resolve_connector,
                     dry_run=dry_run, verbose=verbose, quiet=quiet,
                     concurrency=concurrency, max_file_size=max_file_size,
+                    process_in_background=pib,
                 )
 
                 if not quiet:
@@ -542,7 +565,7 @@ def sync(
         sys.exit(1)
 
     try:
-        client = _make_client(url, token)
+        client = _make_client(url, token, timeout=upload_timeout)
     except ValueError as e:
         click.echo(click.style(str(e), fg="red"), err=True)
         sys.exit(1)
@@ -557,6 +580,9 @@ def sync(
             quiet=quiet,
             concurrency=concurrency,
             manifest_filter=_build_cli_filter(max_file_size),
+            process_in_background=(
+                process_in_background if process_in_background is not None else True
+            ),
         )
     except Exception as e:
         click.echo(click.style(f"Sync failed: {e}", fg="red"), err=True)

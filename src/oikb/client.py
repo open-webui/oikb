@@ -72,8 +72,16 @@ class OikbClient:
         kb_id: str,
         file_hash: str,
         directory_id: str | None = None,
+        process_in_background: bool = True,
     ) -> dict[str, Any]:
-        """POST /files/ — upload a single file to the KB."""
+        """POST /files/ — upload a single file to the KB.
+
+        ``process_in_background=False`` tells Open WebUI to run the
+        parse/embed/vector/link step synchronously (``process_in_background``
+        query param). The HTTP response is then only returned once the file is
+        fully indexed, so the caller knows the upload is durably complete
+        before moving on.
+        """
 
         metadata: dict[str, Any] = {
             "knowledge_id": kb_id,
@@ -86,6 +94,7 @@ class OikbClient:
             "/files/",
             files={"file": (filename, file_content)},
             data={"metadata": json.dumps(metadata)},
+            params={"process_in_background": str(process_in_background).lower()},
         )
         resp.raise_for_status()
         return resp.json()
