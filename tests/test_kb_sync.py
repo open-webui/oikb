@@ -1,9 +1,12 @@
+import mimetypes
 from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
+import respx
 from click.testing import CliRunner
 
+from oikb.client import OikbClient
 from oikb.connectors import BaseConnector, ManifestEntry
 from oikb.kb_sync import group_entries_by_kb, run_entries_sync
 from oikb.sync import SyncCancelled, SyncResult
@@ -145,3 +148,11 @@ def test_upload_error_includes_server_detail():
     client.upload_file.side_effect = httpx.HTTPStatusError("Bad Request", request=response.request, response=response)
     result = run_entries_sync(client, [{"source": "one", "kb-id": "kb"}], resolve_connector=lambda *a, **kw: Source({"a.txt": b"a"}), quiet=True)
     assert "extraction failed" in result.errors[0]
+
+
+@respx.mock
+def test_upload_sends_markdown_as_text_without_system_mime_types(monkeypatch):
+    monkeypatch.setattr(mimetypes, "guess_type", lambda *a, **kw: (None, None))
+    route = respx.post("https://webui.example/api/v1/files/").mock(return_value=httpx.Response(200, json={"id": "f"}))
+    OikbClient("https://webui.example", "token").upload_file(b"| a |\n| - |\n", "doc.md", "kb", "hash")
+    assert b"Content-Type: text/markdown" in route.calls.last.request.content

@@ -414,6 +414,19 @@ sources:
     interval: 1h
 ```
 
+To sync only one folder of a library and drop that folder from the uploaded paths,
+set `path` (or pass `--source-path`). Files are uploaded relative to that folder:
+
+```yaml
+sources:
+  - name: exceptions
+    source: sharepoint:contoso.sharepoint.com/sites/Team/Docs
+    path: Exceptions        # Exceptions/report.xlsx -> report.xlsx
+    kb-id: abc123
+    filter:
+      include: ["*.xlsx"]   # filters match paths relative to `path`
+```
+
 ### Nextcloud
 
 Sync a Nextcloud folder via WebDAV:

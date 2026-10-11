@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 import json
+import mimetypes
+import os
 from typing import Any
 
 import httpx
+
+
+# Python 3.11 has no .md entry and slim images ship no /etc/mime.types, so a
+# Markdown upload went out as application/octet-stream and Open WebUI handed it
+# to its document extraction engine (Docling, Tika) instead of reading it as text.
+_TEXT_TYPES = {".md": "text/markdown", ".markdown": "text/markdown"}
+
+
+def _content_type(filename: str) -> str:
+    ext = os.path.splitext(filename)[1].lower()
+    return mimetypes.guess_type(filename)[0] or _TEXT_TYPES.get(ext, "application/octet-stream")
 
 
 class OikbClient:
@@ -84,7 +97,7 @@ class OikbClient:
 
         resp = self._http.post(
             "/files/",
-            files={"file": (filename, file_content)},
+            files={"file": (filename, file_content, _content_type(filename))},
             data={"metadata": json.dumps(metadata)},
         )
         resp.raise_for_status()

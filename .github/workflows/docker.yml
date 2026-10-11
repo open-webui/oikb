@@ -103,7 +103,7 @@ jobs:
           retention-days: 1
 
   merge-dev:
-    if: github.ref == 'refs/heads/main'
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
     needs: build-dev
     runs-on: ubuntu-latest
     steps:
@@ -129,11 +129,13 @@ jobs:
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           tags=("${{ env.IMAGE }}:dev" "${{ env.IMAGE }}:dev-${SHORT_SHA}")
+          # A flavor publishes only when every one of its arches built.
+          [ "$(ls | wc -l)" -eq 2 ] || { echo "expected 2 digests, found: $(ls)"; exit 1; }
           docker buildx imagetools create $(printf -- '-t %s ' "${tags[@]}") \
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)
 
   merge-dev-alpine:
-    if: github.ref == 'refs/heads/main'
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
     needs: build-dev
     runs-on: ubuntu-latest
     steps:
@@ -159,6 +161,8 @@ jobs:
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           tags=("${{ env.IMAGE }}:dev-alpine" "${{ env.IMAGE }}:dev-${SHORT_SHA}-alpine")
+          # A flavor publishes only when every one of its arches built.
+          [ "$(ls | wc -l)" -eq 2 ] || { echo "expected 2 digests, found: $(ls)"; exit 1; }
           docker buildx imagetools create $(printf -- '-t %s ' "${tags[@]}") \
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)
 
@@ -231,7 +235,7 @@ jobs:
 
   merge-release:
     needs: [read-version, build-release]
-    if: github.ref == 'refs/heads/release'
+    if: ${{ !cancelled() && needs.read-version.result == 'success' && github.ref == 'refs/heads/release' }}
     runs-on: ubuntu-latest
     steps:
       - name: Download digests
@@ -257,12 +261,14 @@ jobs:
           VERSION="${{ needs.read-version.outputs.version }}"
           MAJOR_MINOR="${VERSION%.*}"
           tags=("${{ env.IMAGE }}:latest" "${{ env.IMAGE }}:${VERSION}" "${{ env.IMAGE }}:${MAJOR_MINOR}")
+          # A flavor publishes only when every one of its arches built.
+          [ "$(ls | wc -l)" -eq 2 ] || { echo "expected 2 digests, found: $(ls)"; exit 1; }
           docker buildx imagetools create $(printf -- '-t %s ' "${tags[@]}") \
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)
 
   merge-release-alpine:
     needs: [read-version, build-release]
-    if: github.ref == 'refs/heads/release'
+    if: ${{ !cancelled() && needs.read-version.result == 'success' && github.ref == 'refs/heads/release' }}
     runs-on: ubuntu-latest
     steps:
       - name: Download digests
@@ -288,5 +294,7 @@ jobs:
           VERSION="${{ needs.read-version.outputs.version }}"
           MAJOR_MINOR="${VERSION%.*}"
           tags=("${{ env.IMAGE }}:alpine" "${{ env.IMAGE }}:latest-alpine" "${{ env.IMAGE }}:${VERSION}-alpine" "${{ env.IMAGE }}:${MAJOR_MINOR}-alpine")
+          # A flavor publishes only when every one of its arches built.
+          [ "$(ls | wc -l)" -eq 2 ] || { echo "expected 2 digests, found: $(ls)"; exit 1; }
           docker buildx imagetools create $(printf -- '-t %s ' "${tags[@]}") \
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)

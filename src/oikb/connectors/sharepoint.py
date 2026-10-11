@@ -54,6 +54,7 @@ class SharePointConnector(BaseConnector):
         site: str,
         site_path: str = "",
         library: str = "Documents",
+        root_path: str | None = None,
         tenant_id: str | None = None,
         client_id: str | None = None,
         client_secret: str | None = None,
@@ -64,6 +65,7 @@ class SharePointConnector(BaseConnector):
         self.site = site
         self.site_path = site_path.strip("/")
         self.library = library
+        self.root_path = (root_path or "").strip("/")
 
         tid = tenant_id or os.environ.get("SHAREPOINT_TENANT_ID", "")
         cid = client_id or os.environ.get("SHAREPOINT_CLIENT_ID", "")
@@ -141,7 +143,7 @@ class SharePointConnector(BaseConnector):
 
     def build_manifest(self) -> list[ManifestEntry]:
         entries: list[ManifestEntry] = []
-        self._walk_folder("/", "", entries)
+        self._walk_folder(self.root_path or "/", "", entries)
         entries.sort(key=lambda e: e.display_path)
         return entries
 
@@ -171,7 +173,7 @@ class SharePointConnector(BaseConnector):
                 ))
 
     def read_file(self, path: str, filename: str) -> bytes:
-        file_path = f"{path}/{filename}" if path else filename
+        file_path = "/".join(p for p in (self.root_path, path, filename) if p)
         resp = self._http.get(f"/drives/{self._drive_id}/root:/{quote(file_path)}:/content", follow_redirects=True)
         resp.raise_for_status()
         return resp.content

@@ -153,11 +153,11 @@ class _WebDAVClient:
         return entries
 
     def _href_to_path(self, href: str) -> str | None:
-        dav_root = urlsplit(self._url("/")).path.rstrip("/")
-        raw_path = urlsplit(href).path
-        if not raw_path.startswith(dav_root):
+        dav_root = unquote(urlsplit(self._url("/")).path).rstrip("/")
+        path = unquote(urlsplit(href).path)
+        if path != dav_root and not path.startswith(f"{dav_root}/"):
             return None
-        suffix = unquote(raw_path[len(dav_root) :]) or "/"
+        suffix = path[len(dav_root) :] or "/"
         return _normalize_path(suffix)
 
     def _url(self, path: str) -> str:
