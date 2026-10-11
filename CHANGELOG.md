@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Jira comments**: add `comments=true` to a Jira source, such as `jira:ENG?comments=true`, to include each issue's comments after its description.
+
+### Fixed
+
+- **Jira descriptions keep their structure**: bulleted and numbered lists, nested lists, tables, panels and quotes in an issue description were dropped and now come through as markdown.
+- **Jira source options can be URL-encoded**: a JQL query containing `&` can be written as `%26` without being split into separate options.
+
 ## [0.5.0] - 2026-09-16
 
 ### Added

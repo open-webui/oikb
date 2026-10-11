@@ -136,6 +136,7 @@ def _resolve_connector(
             fields=fields,
             fmt=parsed.get("format", "markdown"),
             limit=int(parsed["limit"]) if parsed.get("limit") else None,
+            comments=parsed.get("comments") == "true",
         )
 
     if source.startswith("sharepoint:"):

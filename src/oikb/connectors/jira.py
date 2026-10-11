@@ -8,6 +8,7 @@ Configurable:
   - fields: which fields to export (default: summary, description, status, issuetype)
   - format: output format — 'markdown' (default) or 'json'
   - limit: max issues to fetch (default: unlimited)
+  - comments: 'true' appends each issue's comments to its markdown
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import hashlib
 import json as json_mod
 import os
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 
@@ -35,6 +37,7 @@ class JiraConnector(BaseConnector):
         base_url: str | None = None,
         user: str | None = None,
         token: str | None = None,
+        comments: bool = False,
     ):
         self.project_key = project_key
         self._base_url = (base_url or os.environ.get("JIRA_URL", "")).rstrip("/")
@@ -50,6 +53,7 @@ class JiraConnector(BaseConnector):
         self._fields = fields or ["summary", "description", "status", "issuetype", "priority", "assignee"]
         self._fmt = fmt
         self._limit = limit
+        self._comments = comments
         self._http = httpx.Client(
             base_url=self._base_url,
             auth=(self._user, self._token) if self._user else None,
@@ -60,7 +64,7 @@ class JiraConnector(BaseConnector):
 
     def build_manifest(self) -> list[ManifestEntry]:
         entries: list[ManifestEntry] = []
-        api_fields = list(set(self._fields + ["summary", "updated"]))
+        api_fields = list(set(self._fields + ["summary", "updated"] + (["comment"] if self._comments else [])))
         next_page_token = None
         fetched = 0
 
@@ -148,6 +152,12 @@ class JiraConnector(BaseConnector):
         desc = self._resolve_field(fields, "description") if "description" in self._fields else ""
         if desc:
             lines.extend(["", desc])
+        comments = (fields.get("comment") or {}).get("comments", []) if self._comments else []
+        if comments:
+            lines.extend(["", "## Comments"])
+            for c in comments:
+                author = (c.get("author") or {}).get("displayName", "unknown")
+                lines.extend(["", f"**{author}** ({c.get('created', '')[:10]}): {self._adf_to_text(c.get('body'))}"])
         return "\n".join(lines)
 
     def _adf_to_text(self, doc: dict | None) -> str:
@@ -165,7 +175,27 @@ class JiraConnector(BaseConnector):
             elif node.get("type") == "codeBlock":
                 text = "".join(c.get("text", "") for c in node.get("content", []) if c.get("type") == "text")
                 parts.append(f"```\n{text}\n```")
+            elif node.get("type") == "bulletList":
+                parts.extend(f"- {self._adf_list_item(item)}" for item in node.get("content", []))
+            elif node.get("type") == "orderedList":
+                parts.extend(f"{n}. {self._adf_list_item(item)}" for n, item in enumerate(node.get("content", []), 1))
+            elif node.get("type") == "table":
+                rows = [
+                    "| " + " | ".join(self._adf_to_text(cell).replace("\n", " ") for cell in row.get("content", [])) + " |"
+                    for row in node.get("content", [])
+                ]
+                if rows:
+                    columns = len(node["content"][0].get("content", []))
+                    rows.insert(1, "| " + " | ".join(["---"] * columns) + " |")
+                parts.append("\n".join(rows))
+            elif node.get("type") == "panel":
+                parts.append(self._adf_to_text(node))
+            elif node.get("type") == "blockquote":
+                parts.append("> " + self._adf_to_text(node).replace("\n", "\n> "))
         return "\n".join(parts)
+
+    def _adf_list_item(self, item: dict) -> str:
+        return self._adf_to_text(item).replace("\n", "\n  ")
 
     def read_file(self, path: str, filename: str) -> bytes:
         text = self._issue_cache.get(filename)
@@ -189,5 +219,5 @@ def parse_jira_source(source: str) -> dict[str, str | None]:
         for param in parts[1].split("&"):
             if "=" in param:
                 k, v = param.split("=", 1)
-                result[k] = v
+                result[unquote(k)] = unquote(v)
     return result
