@@ -1,4 +1,8 @@
-"""File watcher — debounced fswatch integration for live sync."""
+"""File watcher — debounced fswatch integration for live sync.
+
+Supports both native filesystem events (FSEvents / inotify) and
+PollingObserver for network-mounted volumes (SMB / CIFS / NFS).
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ from typing import Callable
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 
 
 class _DebouncedHandler(FileSystemEventHandler):
@@ -51,6 +56,8 @@ def watch_directory(
     on_change: Callable[[], None],
     debounce_seconds: float = 1.0,
     ignore: frozenset[str] | None = None,
+    polling: bool = False,
+    polling_interval: float = 5.0,
 ) -> None:
     """Watch a directory for changes and call on_change after debounce.
 
@@ -61,6 +68,13 @@ def watch_directory(
         on_change:        Callback fired after changes settle.
         debounce_seconds: Quiet period before triggering sync.
         ignore:           File/dir names to ignore.
+        polling:          Use PollingObserver instead of native events.
+                          Required for SMB/CIFS/NFS network mounts where
+                          kernel-level filesystem events are not available.
+        polling_interval: How often (seconds) the PollingObserver checks
+                          for changes. Only used when polling=True.
+                          Lower values detect changes faster but increase
+                          I/O load on the network share. Default: 5.0.
     """
     path = Path(directory).resolve()
     if not path.is_dir():
@@ -72,7 +86,10 @@ def watch_directory(
         ignore=ignore,
     )
 
-    observer = Observer()
+    if polling:
+        observer = PollingObserver(timeout=polling_interval)
+    else:
+        observer = Observer()
     observer.schedule(handler, str(path), recursive=True)
     observer.start()
 
