@@ -449,12 +449,13 @@ def start_daemon(
     port: int = 8080,
     no_server: bool = False,
     log_format: str = "text",
+    log_level: str = "INFO",
 ) -> None:
     """Start the daemon with scheduler + optional HTTP server."""
     global _history, _entries
 
     from oikb.logging import configure_logging
-    configure_logging(log_format=log_format)
+    configure_logging(log_format=log_format, log_level=log_level)
 
     from oikb.kb_sync import group_entries_by_kb
     group_entries_by_kb(entries)  # Validate shared destinations before starting tasks.
