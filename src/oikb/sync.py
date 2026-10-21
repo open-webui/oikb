@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fnmatch
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -22,6 +21,7 @@ from rich.progress import (
 
 from oikb.client import OikbClient
 from oikb.connectors import BaseConnector, ManifestEntry, SourceFileUnavailable
+from oikb.ignore import glob_match
 
 # Stderr console for progress output (keeps stdout clean for piping).
 _console = Console(stderr=True)
@@ -102,9 +102,9 @@ def build_manifest_filter(
         result = []
         for entry in entries:
             path = entry.display_path
-            if include and not any(fnmatch.fnmatch(path, p) for p in include):
+            if include and not any(glob_match(path, p) for p in include):
                 continue
-            if exclude and any(fnmatch.fnmatch(path, p) for p in exclude):
+            if exclude and any(glob_match(path, p) for p in exclude):
                 continue
             if max_size is not None and entry.size > max_size:
                 click.echo(
