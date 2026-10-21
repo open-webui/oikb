@@ -149,10 +149,16 @@ class SharePointConnector(BaseConnector):
 
     def _walk_folder(self, folder_path: str, prefix: str, entries: list[ManifestEntry]) -> None:
         url = f"/drives/{self._drive_id}/root/children" if folder_path == "/" else f"/drives/{self._drive_id}/root:/{quote(folder_path)}:/children"
-        resp = self._http.get(url)
-        resp.raise_for_status()
+        items: list[dict[str, Any]] = []
+        while url:
+            resp = self._http.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            items.extend(data.get("value", []))
+            # Graph pages large folders; @odata.nextLink is the absolute URL of the next page.
+            url = data.get("@odata.nextLink")
 
-        for item in resp.json().get("value", []):
+        for item in items:
             if "folder" in item:
                 sub = f"{prefix}/{item['name']}" if prefix else item["name"]
                 child_path = f"{folder_path}/{item['name']}" if folder_path != "/" else item["name"]
