@@ -1010,6 +1010,15 @@ def validate(config_file: str | None, deep: bool):
         else:
             click.echo(click.style(f"  ✓ {entry_name}", fg="green") + f"  {source} → {kb_id}")
 
+    # Rules spanning entries that share a KB; missing fields are reported above.
+    from oikb.kb_sync import group_entries_by_kb
+
+    try:
+        group_entries_by_kb([e for e in entries if e.get("source") and e.get("kb-id")])
+    except ValueError as e:
+        click.echo(click.style(f"  ✗ {e}", fg="red"))
+        has_errors = True
+
     if client:
         client.close()
 
