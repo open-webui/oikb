@@ -162,7 +162,7 @@ class SharePointConnector(BaseConnector):
                 entries.append(ManifestEntry(
                     filename=item["name"],
                     path=prefix,
-                    checksum=etag[:16] if etag else "",
+                    checksum=etag,
                     size=item.get("size", 0),
                 ))
 

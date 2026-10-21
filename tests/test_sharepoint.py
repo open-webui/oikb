@@ -104,3 +104,39 @@ def test_missing_root_path_raises(respx_mock: respx.MockRouter) -> None:
 
     with pytest.raises(httpx.HTTPStatusError):
         _resolve_connector(SOURCE, path="Nope").build_manifest()
+
+
+def _manifest_for(respx_mock: respx.MockRouter, item: dict) -> list:
+    _mock_graph(respx_mock)
+    respx_mock.get(f"{GRAPH}/drives/drive-id/root/children").respond(
+        json={"value": [{"name": "ESL-IRIS-DB.xlsx", "file": {}, "size": 1, **item}]}
+    )
+    return _resolve_connector(SOURCE).build_manifest()
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ({"eTag": '"{927507AD-AF19-45EE-B41D-1BADB347B79B},57"'}, {"eTag": '"{927507AD-AF19-45EE-B41D-1BADB347B79B},58"'}),
+        ({"cTag": '"c:{927507AD-AF19-45EE-B41D-1BADB347B79B},79"'}, {"cTag": '"c:{927507AD-AF19-45EE-B41D-1BADB347B79B},80"'}),
+    ],
+)
+def test_new_file_version_changes_the_checksum(before: dict, after: dict) -> None:
+    with respx.mock(assert_all_called=False) as router:
+        old = _manifest_for(router, before)[0].checksum
+    with respx.mock(assert_all_called=False) as router:
+        new = _manifest_for(router, after)[0].checksum
+
+    assert old != new
+
+
+@respx.mock(assert_all_called=False)
+def test_checksum_is_the_unquoted_etag(respx_mock: respx.MockRouter) -> None:
+    manifest = _manifest_for(respx_mock, {"eTag": '"{927507AD-AF19-45EE-B41D-1BADB347B79B},57"'})
+
+    assert manifest[0].checksum == "{927507AD-AF19-45EE-B41D-1BADB347B79B},57"
+
+
+@respx.mock(assert_all_called=False)
+def test_checksum_is_empty_without_etag_or_ctag(respx_mock: respx.MockRouter) -> None:
+    assert _manifest_for(respx_mock, {})[0].checksum == ""
