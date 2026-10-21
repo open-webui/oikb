@@ -10,6 +10,10 @@ from typing import Callable
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
+# Read-only access events. A sync reads every file it hashes, so treating these
+# as changes would schedule the next sync from the current one.
+_READ_ONLY_EVENTS = frozenset({"opened", "closed_no_write"})
+
 
 class _DebouncedHandler(FileSystemEventHandler):
     """Collects filesystem events and fires a callback after a quiet period."""
@@ -34,6 +38,8 @@ class _DebouncedHandler(FileSystemEventHandler):
 
     def on_any_event(self, event: FileSystemEvent) -> None:
         if event.is_directory:
+            return
+        if event.event_type in _READ_ONLY_EVENTS:
             return
         if self._should_ignore(event.src_path):
             return
