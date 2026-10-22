@@ -9,15 +9,19 @@ WORKDIR /app
 
 RUN apk add --no-cache build-base clang21-libclang pkgconf
 
+ARG TARGETARCH
+
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --extra all --no-install-project --no-dev
+    uv sync --extra all --no-install-project --no-dev \
+      $([ "$TARGETARCH" = arm64 ] && echo --no-install-package pymupdf)
 
 COPY pyproject.toml LICENSE README.md ./
 COPY src/ ./src/
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --extra all --no-dev
+    uv sync --extra all --no-dev \
+      $([ "$TARGETARCH" = arm64 ] && echo --no-install-package pymupdf)
 
 
 FROM python:3.11-alpine3.23
