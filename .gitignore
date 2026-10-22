@@ -11,3 +11,7 @@ build/
 .DS_Store
 Thumbs.db
 uv.lock
+
+.idea/
+
+.github/
