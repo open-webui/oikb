@@ -2,12 +2,12 @@ name: Docker (GHCR)
 
 on:
   push:
-    branches: [main, release]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
   group: docker-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
@@ -18,12 +18,15 @@ permissions:
 
 jobs:
   read-version:
-    if: github.ref == 'refs/heads/release'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.pkg.outputs.version }}
+      is_new_version: ${{ steps.version.outputs.is_new_version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Read version
         id: pkg
@@ -35,6 +38,22 @@ jobs:
           print(m.group(1))
           ")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check release version
+        id: version
+        env:
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          if git rev-parse "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            TAG_SHA=$(git rev-list -n 1 "v${VERSION}")
+            if [ "$TAG_SHA" = "$GITHUB_SHA" ]; then
+              echo "is_new_version=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "is_new_version=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "is_new_version=true" >> "$GITHUB_OUTPUT"
+          fi
 
   build-dev:
     if: github.ref == 'refs/heads/main'
@@ -168,7 +187,7 @@ jobs:
 
   build-release:
     needs: read-version
-    if: github.ref == 'refs/heads/release'
+    if: github.ref == 'refs/heads/main' && needs.read-version.outputs.is_new_version == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -235,7 +254,7 @@ jobs:
 
   merge-release:
     needs: [read-version, build-release]
-    if: ${{ !cancelled() && needs.read-version.result == 'success' && github.ref == 'refs/heads/release' }}
+    if: ${{ !cancelled() && needs.read-version.result == 'success' && github.ref == 'refs/heads/main' && needs.read-version.outputs.is_new_version == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Download digests
@@ -268,7 +287,7 @@ jobs:
 
   merge-release-alpine:
     needs: [read-version, build-release]
-    if: ${{ !cancelled() && needs.read-version.result == 'success' && github.ref == 'refs/heads/release' }}
+    if: ${{ !cancelled() && needs.read-version.result == 'success' && github.ref == 'refs/heads/main' && needs.read-version.outputs.is_new_version == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Download digests

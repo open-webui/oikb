@@ -40,7 +40,7 @@ async def verify_api_key(
 app = FastAPI(
     title="oikb",
     description="Sync engine for Open WebUI Knowledge Bases. Trigger syncs, check status, and query history.",
-    version="0.3.5",
+    version=__version__,
 )
 
 # Runtime state populated by start_daemon().
@@ -49,6 +49,13 @@ _sync_locks: dict[str, asyncio.Lock] = {}
 _history: SyncHistory | None = None
 _entries: list[dict] = []
 _shutdown_event: asyncio.Event | None = None
+
+
+def _status_key(entry: dict) -> str:
+    # Startup validates names for repeated sources; retain old keys otherwise.
+    if sum(member["source"] == entry["source"] for member in _entries) > 1:
+        return entry["name"]
+    return entry["source"]
 
 
 # ── Interval / cron parser ───────────────────────────────────────
@@ -267,14 +274,14 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
     from oikb.sync import SyncCancelled
 
     entries = [e for e in _entries if e.get("kb-id") == entry["kb-id"]] or [entry]
-    source = ", ".join(e["source"] for e in entries)
+    source = ", ".join(_status_key(e) for e in entries)
     kb_id = entry["kb-id"]
     started_at = time.time()
     client = None
 
     def set_state(**state):
         for member in entries:
-            _scheduler_state[member["source"]] = {
+            _scheduler_state[_status_key(member)] = {
                 "name": member.get("name", member["source"]), **state,
             }
 
@@ -394,7 +401,7 @@ async def _schedule_entry(entry: dict) -> None:
     ('0 */6 * * *', '0 6 * * 1-5').
     """
     raw_interval = entry.get("interval", "30m")
-    source = entry.get("source", "unknown")
+    source = _status_key(entry)
     use_cron = _is_cron(str(raw_interval))
 
     if use_cron:
@@ -457,7 +464,11 @@ def start_daemon(
     configure_logging(log_format=log_format)
 
     from oikb.kb_sync import group_entries_by_kb
+    from oikb.config import source_status_keys
+    from oikb.webhooks import prepare_webhook_entries
     group_entries_by_kb(entries)  # Validate shared destinations before starting tasks.
+    source_status_keys(entries)
+    prepare_webhook_entries(entries)
     _entries = entries
     _history = SyncHistory()
     set_build_info(__version__)
@@ -508,7 +519,7 @@ def start_daemon(
         click.echo(f"  GET  http://localhost:{port}/history")
         click.echo(f"  POST http://localhost:{port}/sync/{{kb_id}}")
         if webhook_entries:
-            click.echo(f"  POST http://localhost:{port}/webhooks/github|gitlab|slack|confluence")
+            click.echo(f"  POST http://localhost:{port}/webhooks/github|gitlab|gitea|slack|confluence")
         click.echo(f"\n  OpenAPI spec: http://localhost:{port}/openapi.json")
         click.echo(f"  Add as Tool Server in Open WebUI → Settings → Connections")
 

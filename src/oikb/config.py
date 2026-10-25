@@ -9,12 +9,28 @@ Resolution order (highest priority first):
 from __future__ import annotations
 
 import os
+from collections import Counter
 from pathlib import Path
 
 import yaml
 
 CONFIG_DIR = Path(os.environ.get("OIKB_CONFIG_DIR", Path.home() / ".config" / "oikb"))
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
+
+
+def source_status_keys(entries: list[dict]) -> list[str]:
+    """Keep existing status keys unless repeated sources need named identities."""
+    counts = Counter(entry.get("source") for entry in entries)
+    keys = []
+    for entry in entries:
+        source = entry.get("source")
+        key = entry.get("name") if counts[source] > 1 else source
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("Sources require source strings; repeated sources also require distinct nonempty names")
+        if key in keys:
+            raise ValueError(f"Duplicate source status key: {key}. Choose distinct source names.")
+        keys.append(key)
+    return keys
 
 
 def _load_config_file() -> dict:

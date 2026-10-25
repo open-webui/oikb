@@ -1,6 +1,6 @@
 # 📚 oikb
 
-Keep your [Open WebUI](https://github.com/open-webui/open-webui) Knowledge Bases in sync. Point it at a local directory, a GitHub repo, a Confluence space, an S3 bucket, Zotero, or any of 46 supported sources. Only new and modified files are uploaded via incremental SHA-256 diffing.
+Keep your [Open WebUI](https://github.com/open-webui/open-webui) Knowledge Bases in sync. Point it at a local directory, a GitHub or Gitea repo, a Confluence space, an S3 bucket, Zotero, or any of 47 supported sources. Only new and modified files are uploaded via incremental source-checksum diffing.
 
 > [!IMPORTANT]
 > Requires **Open WebUI 0.9.6+**
@@ -53,7 +53,7 @@ oikb daemon --port 8080
 
 Features:
 - **Scheduled sync** — simple intervals (`30m`, `1h`) or cron expressions (`0 6 * * 1-5`)
-- **Webhooks** — instant sync on push via `/webhooks/github`, `/webhooks/gitlab`, `/webhooks/slack`, `/webhooks/confluence`
+- **Webhooks** — sync on source changes via `/webhooks/github`, `/webhooks/gitlab`, `/webhooks/gitea`, `/webhooks/slack`, `/webhooks/confluence`
 - **Health checks** — `GET /health` for Docker/K8s readiness probes
 - **Prometheus metrics** — `GET /metrics` exports sync counters, duration histograms, and error rates
 - **Sync history** — `GET /history` queryable log of all syncs
@@ -136,11 +136,11 @@ services:
       start_period: 15s
 ```
 
-## 46 Connectors
+## 47 Connectors
 
 | Category | Sources |
 |---|---|
-| **Code Repos** | GitHub, GitLab, Bitbucket |
+| **Code Repos** | GitHub, GitLab, Gitea, Bitbucket |
 | **Cloud Storage** | S3, GCS, Azure Blob, Dropbox, R2, Google Drive, SharePoint, Nextcloud, Egnyte, Oracle Cloud |
 | **Wikis & KBs** | Confluence, Notion, BookStack, Discourse, GitBook, Guru, Outline, Slab, Document360, DokuWiki, Google Sites |
 | **Ticketing** | Jira, Linear, Zendesk, Freshdesk, Asana, ClickUp, Airtable, ServiceNow, ProductBoard |
@@ -161,6 +161,24 @@ oikb sync "zotero:Research%%Machine Learning" --kb-id your-kb-id
 ```
 
 Some connectors need an optional extra: `pip install oikb[gdrive]`, `pip install oikb[s3]`, `pip install oikb[zotero]`, or `pip install oikb[all]` for everything.
+
+### Gitea
+
+Sync repository files or built-in wiki pages from Gitea 1.24.0+ (no extra dependency):
+
+```bash
+export GITEA_URL=https://git.example.com   # Instance root; /gitea subpaths work too
+export GITEA_TOKEN=your-read-token        # Optional for public repositories
+
+oikb sync gitea:engineering/docs/handbook --kb-id your-kb-id
+oikb diff 'gitea:engineering/docs?wiki=true' --kb-id your-wiki-kb-id
+```
+
+Use a personal access token with `read:repository`. Per-source `auth.base_url`
+and `auth.token` override the environment; `--url` and `--token` always configure
+Open WebUI. Repository scans and downloads use the same pinned commit. Wiki
+pages are checked and cached before syncing. See the [Gitea guide](docs/guide.md#gitea)
+for shared KBs, webhooks, compatibility tests, and wiki limitations.
 
 ### Zotero
 

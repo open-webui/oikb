@@ -62,6 +62,12 @@ def _resolve_connector(
     """
     auth = auth or {}
 
+    if source.startswith("gitea:"):
+        from oikb.connectors.gitea import GiteaConnector, parse_gitea_source
+        parsed = parse_gitea_source(source)
+        parsed["path"] = path if path is not None else parsed["path"]
+        return GiteaConnector(**parsed, branch=branch, **auth)
+
     if source.startswith("github:"):
         from oikb.connectors.github import GitHubConnector, parse_github_source
         parsed = parse_github_source(source)
@@ -419,7 +425,7 @@ def _parse_auth_option(pairs: tuple[str, ...]) -> dict[str, str]:
 @cli.command()
 @click.argument("source", required=False)
 @common_options
-@click.option("--branch", default=None, help="Branch for GitHub sources.")
+@click.option("--branch", default=None, help="Branch for repository sources (GitHub, GitLab, Gitea, Bitbucket).")
 @click.option("--path", "source_path", default=None, help="Subdirectory within the source.")
 @click.option("--dry-run", is_flag=True, help="Preview changes without uploading.")
 @click.option("-v", "--verbose", is_flag=True, help="Show detailed progress.")
@@ -452,7 +458,7 @@ def sync(
 ):
     """Incremental sync from a source to a Knowledge Base.
 
-    SOURCE can be a local directory, github:owner/repo, or s3://bucket/prefix.
+    SOURCE can be a local directory, github:owner/repo, gitea:owner/repo, or s3://bucket/prefix.
     If omitted, reads .oikb.yaml from the current directory.
     """
     quiet = ctx.obj.get("quiet", False)
@@ -544,6 +550,7 @@ def sync(
     try:
         client = _make_client(url, token)
     except ValueError as e:
+        connector.close()
         click.echo(click.style(str(e), fg="red"), err=True)
         sys.exit(1)
 
@@ -586,7 +593,7 @@ def sync(
 @cli.command()
 @click.argument("source")
 @common_options
-@click.option("--branch", default=None, help="Branch for GitHub sources.")
+@click.option("--branch", default=None, help="Branch for repository sources (GitHub, GitLab, Gitea, Bitbucket).")
 @click.option("--path", "source_path", default=None, help="Subdirectory within the source.")
 @click.option("-v", "--verbose", is_flag=True, help="Show detailed output.")
 @click.option(
@@ -624,6 +631,7 @@ def diff(
     try:
         client = _make_client(url, token)
     except ValueError as e:
+        connector.close()
         click.echo(click.style(str(e), fg="red"), err=True)
         sys.exit(1)
 
@@ -942,6 +950,14 @@ def validate(config_file: str | None, deep: bool):
         click.echo(click.style("No .oikb.yaml found or file is empty.", fg="red"), err=True)
         sys.exit(1)
 
+    from oikb.config import source_status_keys
+    from oikb.webhooks import prepare_webhook_entries
+    try:
+        source_status_keys(entries)
+        prepare_webhook_entries(entries)
+    except (ValueError, TypeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
     # Deep validation: create a client and verify connectivity first.
     client = None
     if deep:
@@ -970,7 +986,9 @@ def validate(config_file: str | None, deep: bool):
         # Syntax check: resolve the connector (using its configured auth,
         # since some connectors — e.g. SharePoint — authenticate eagerly).
         try:
-            _resolve_connector(source, auth=entry.get("auth", {}))
+            with _resolve_connector(source, branch=entry.get("branch"),
+                                    path=entry.get("path"), auth=entry.get("auth", {})):
+                pass
         except Exception as e:
             click.echo(click.style(f"  ✗ {entry_name}: {e}", fg="red"))
             has_errors = True
@@ -991,6 +1009,15 @@ def validate(config_file: str | None, deep: bool):
                 has_errors = True
         else:
             click.echo(click.style(f"  ✓ {entry_name}", fg="green") + f"  {source} → {kb_id}")
+
+    # Rules spanning entries that share a KB; missing fields are reported above.
+    from oikb.kb_sync import group_entries_by_kb
+
+    try:
+        group_entries_by_kb([e for e in entries if e.get("source") and e.get("kb-id")])
+    except ValueError as e:
+        click.echo(click.style(f"  ✗ {e}", fg="red"))
+        has_errors = True
 
     if client:
         client.close()

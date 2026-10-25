@@ -1,12 +1,12 @@
 # -----------------------------------------------------------------------------
 # Release - Create GitHub release from CHANGELOG, trigger Docker builds
-# Runs on pushes to the release branch when version changes.
+# Runs on pushes to main; existing versions are skipped.
 # -----------------------------------------------------------------------------
 name: Release
 
 on:
   push:
-    branches: [release]
+    branches: [main]
 
 concurrency:
   group: release-${{ github.ref }}
@@ -48,6 +48,7 @@ jobs:
             echo "Release v${{ steps.pkg.outputs.version }} already exists - skipping creation"
           else
             gh release create "v${{ steps.pkg.outputs.version }}" \
+              --target "$GITHUB_SHA" \
               --title "v${{ steps.pkg.outputs.version }}" \
               --notes-file /tmp/release-notes.md
           fi

@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0] - 2026-10-21
+
+### Added
+
+- **Gitea repositories**: sync files from public or private Gitea repositories, including servers you host yourself. Choose a branch or folder, exclude files, preview changes, and schedule updates. Each source can use a different server and sign-in. Supports Gitea 1.24.0 and later, with tests against 1.24.0, 1.26.4, and 28.2.0.
+- **Gitea wikis**: sync built-in Markdown wiki pages, including sidebar and footer pages. Repository files and wiki pages can share a Knowledge Base, with separate destination folders to keep matching filenames apart.
+- **Gitea change notifications**: repository pushes and wiki edits can start a sync automatically. Each notice is checked against the configured secret, server, repository, and selected branch where applicable. One change updates every matching Knowledge Base, including its other configured sources.
+- **SharePoint folder selection**: sync one folder within a document library instead of the whole library. Uploaded paths start inside that folder, so selecting `Exceptions` uploads `Exceptions/report.xlsx` as `report.xlsx`.
+- **SharePoint cloud settings per source**: use commercial, GCC High, and Department of Defense SharePoint sources together, each with its own cloud setting.
+- **BookStack certificate setting**: added an option to turn off server certificate checks for installations using self-signed certificates. Certificate checks remain enabled by default.
+
+### Fixed
+
+- **Markdown uploads**: Markdown files are now identified as text when sent to Open WebUI, including from minimal Docker installations. This avoids sending them to a document converter that can fail to read them.
+- **Nextcloud file listings**: accounts with usernames containing `@`, spaces, accented letters, or `%` no longer miss files because Nextcloud writes their folder addresses differently. Filenames with spaces or literal `%` characters are also preserved when downloading.
+- **Separate sync status**: sources with the same address no longer overwrite each other's status and history labels. For example, two Gitea servers can both have `gitea:team/docs` and still report their results separately.
+- **Configuration checks**: validation now uses each source's configured branch and folder, catches invalid Gitea wiki options and missing notification secrets, and closes source connections when finished.
+- **Docker image publishing**: a failed Alpine build no longer prevents publishing a successfully built standard image, or vice versa. Each image still requires both its Intel/AMD and ARM builds to finish before publication.
+
+### Changed
+
+- **Repeated source names**: when the same source address appears more than once in the configuration, each entry now requires a distinct name. Those names identify its status and sync history.
+- **Release publishing**: releases, Python packages, and versioned Docker images now publish from `main` instead of a separate `release` branch. GitHub releases point to the exact commit that started the release run, and a newer push no longer cancels an in-progress Docker build.
+
+### Notes
+
+- **Gitea sync checks**: if oikb cannot finish listing the repository, or detects that a wiki page changed while being read, it stops before changing the Knowledge Base. Repository downloads use the version selected at the start of the scan, even if someone pushes another change during the sync.
+- **Gitea wiki limits**: blank pages, or pages too large for Gitea to return, stop the sync. Add text to or remove blank pages, and raise the server's page-size limit for larger pages. Wiki attachments are not included. See the [Gitea guide](docs/guide.md#gitea) for setup and other limits.
+
 ## [0.5.0] - 2026-09-16
 
 ### Added

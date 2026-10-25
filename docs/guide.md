@@ -19,6 +19,7 @@ A complete guide to syncing content into Open WebUI Knowledge Bases.
   - [Local Directories](#local-directories)
   - [GitHub](#github)
   - [GitLab / Bitbucket](#gitlab--bitbucket)
+  - [Gitea](#gitea)
   - [Confluence](#confluence)
   - [BookStack](#bookstack)
   - [Cloud Storage (S3 / GCS / Azure)](#cloud-storage-s3--gcs--azure)
@@ -276,6 +277,117 @@ oikb sync bitbucket:owner/repo --kb-id your-kb-id
 
 Requires `GITLAB_TOKEN` or `BITBUCKET_TOKEN` respectively.
 
+### Gitea
+
+Repository files and standard built-in Markdown wiki pages are supported through
+the REST API, with no Git installation or optional Python dependency. API
+compatibility targets Gitea 1.24.0 and later; use a maintained server release.
+Forgejo compatibility is not claimed.
+
+```bash
+export GITEA_URL=https://git.example.com
+export GITEA_TOKEN=your-read-token
+
+oikb sync gitea:engineering/docs --branch main --path handbook --kb-id your-kb-id
+oikb diff 'gitea:engineering/docs?wiki=true' --kb-id your-wiki-kb-id
+
+# Explicit credentials for a second instance:
+oikb sync gitea:team/docs --kb-id your-kb-id \
+  --auth base_url=https://other.example/gitea --auth token=your-other-token
+```
+
+Create a personal access token with `read:repository` and access to the selected
+repositories. Public access may work without a token, depending on the instance.
+Tokens are sent in an Authorization header. The URL is required: there is no
+implicit public Gitea host.
+
+| Setting | Meaning |
+|---|---|
+| `auth.base_url` / `GITEA_URL` | Instance root, including an optional context path and port; omit `/api/v1`. |
+| `auth.token` / `GITEA_TOKEN` | Source PAT; explicit `auth.token: ""` disables environment-token fallback. |
+| `branch` / `--branch` | Branch name, including names with `/`; defaults to the repository default branch. |
+| `path` / `--path` | Directory within the repository; overrides an inline source directory. An explicit empty path selects the root. |
+| `?wiki=true` | Select the built-in wiki; branch and path options are not accepted in this mode. |
+| `gitea_secret` | Required signing secret for a webhook-enabled Gitea source. |
+
+Explicit source settings take precedence over the environment. Top-level YAML
+`url`/`token` and CLI `--url`/`--token` configure **Open WebUI**, not Gitea.
+HTTPS certificate verification stays enabled; configure `SSL_CERT_FILE` for a
+private certificate authority. Redirects are rejected: use the canonical
+instance root and correct reverse-proxy configuration.
+
+To combine files and a wiki in one KB, configure both together and give them
+distinct destination prefixes:
+
+```yaml
+defaults:
+  interval: 30m
+
+sources:
+  - name: engineering-docs
+    source: gitea:engineering/docs/handbook
+    kb-id: shared-kb
+    target-path: handbook
+    branch: main
+    auth:
+      base_url: ${GITEA_URL}
+      token: ${GITEA_TOKEN}
+    filter:
+      include: ["*.md", "*.txt"]
+      max-size: 50mb
+    webhook: true
+    gitea_secret: ${GITEA_WEBHOOK_SECRET}
+
+  - name: engineering-wiki
+    source: "gitea:engineering/docs?wiki=true"
+    kb-id: shared-kb
+    target-path: wiki
+    auth:
+      base_url: ${GITEA_URL}
+      token: ${GITEA_TOKEN}
+    webhook: true
+    gitea_secret: ${GITEA_WEBHOOK_SECRET}
+```
+
+Run `oikb validate`, then `oikb sync --name engineering-docs --dry-run` before
+syncing. The named command processes the entire shared-KB group. `validate`
+checks local Gitea configuration; `validate --deep` checks Open WebUI connectivity.
+Use `diff` or a dry run to check Gitea access.
+
+Repository listing is fully paginated and downloads are pinned to the scanned
+commit. Files retain their original bytes and use Git blob IDs as checksums.
+Symlinks and submodules are skipped. LFS pointers are synced as pointer text;
+LFS objects are not downloaded. A missing branch or directory, failed request,
+or incomplete listing stops the scan before any destination diff or cleanup.
+
+Wiki documents use their canonical API page names plus `.md` (for example,
+`Home.md` or `100%25+Free.md`). Escaped slashes remain part of the filename.
+Markdown is preserved, including sidebar/footer pages when listed, without
+repeating navigation content inside other documents. Existing filters can
+exclude those files. Arbitrary wiki attachments and nested Git-only wiki files
+are not supported.
+
+A wiki scan reads every page, verifies revisions against two complete metadata
+passes, and caches its bytes for upload. Filters apply after this scan. If a
+page changes during scanning, retry once the wiki settles. Gitea returns the
+same empty content field for a blank page and a page exceeding
+`[api] DEFAULT_MAX_BLOB_SIZE`; either stops the scan. Add content to/remove blank
+pages, or raise that server limit for oversized pages. Disabled, external, or
+uninitialized wikis are errors, not empty sources.
+
+An entirely empty combined manifest retains oikb's existing no-cleanup behavior.
+An empty member of a nonempty shared-KB group can have its old files removed.
+After a successful scan, the shared sync engine still deletes stale files before
+uploading replacements; a later upload failure can temporarily leave files missing.
+
+The opt-in integration suite creates disposable Gitea 1.24.0, 1.26.4, and 28.2.0
+Docker containers, including a reverse-proxy subpath deployment. It uses isolated
+test accounts and a mock Open WebUI destination, never ambient production credentials:
+
+```bash
+OIKB_GITEA_INTEGRATION=1 python -m pytest tests/test_gitea_integration.py -v
+```
+
 ### Confluence
 
 ```bash
@@ -415,7 +527,7 @@ sources:
 ```
 
 To sync only one folder of a library and drop that folder from the uploaded paths,
-set `path` (or pass `--source-path`). Files are uploaded relative to that folder:
+set `path` (or pass `--path`). Files are uploaded relative to that folder:
 
 ```yaml
 sources:
@@ -487,11 +599,11 @@ Optional settings:
 
 ### All Connectors
 
-46 connectors available. See the full list:
+47 connectors available. See the full list:
 
 | Category | Sources |
 |---|---|
-| **Git** | GitHub, GitLab, Bitbucket |
+| **Git** | GitHub, GitLab, Gitea, Bitbucket |
 | **Cloud Storage** | S3, GCS, Azure Blob, Dropbox, R2, Google Drive, SharePoint, Nextcloud, Egnyte, Oracle Cloud |
 | **Wikis & KBs** | Confluence, Notion, BookStack, Discourse, GitBook, Guru, Outline, Slab, Document360, DokuWiki, Google Sites |
 | **Ticketing** | Jira, Linear, Zendesk, Freshdesk, Asana, ClickUp, Airtable, ServiceNow, ProductBoard |
@@ -609,6 +721,7 @@ Both can be mixed in the same config. Auto-detected by field count.
 | `POST /sync/{id}?dry_run=true` | Preview changes without uploading |
 | `POST /webhooks/github` | GitHub push webhook |
 | `POST /webhooks/gitlab` | GitLab push webhook |
+| `POST /webhooks/gitea` | Signed Gitea push and wiki webhook |
 | `POST /webhooks/slack` | Slack event webhook |
 | `POST /webhooks/confluence` | Confluence update webhook |
 
@@ -640,7 +753,27 @@ sources:
 
 Then add a webhook in GitHub → Settings → Webhooks pointing to `http://your-daemon:8080/webhooks/github`.
 
-Supported: GitHub, GitLab, Slack, Confluence.
+Supported: GitHub, GitLab, Gitea, Slack, Confluence.
+
+For Gitea, enable `webhook: true` and set `gitea_secret` on each source (see the
+[Gitea example](#gitea)). In the repository's Settings → Webhooks, choose the
+**Gitea** type, POST, `application/json`, the same secret, and push/wiki events.
+Set the target to `https://your-daemon/webhooks/gitea`. The route validates
+`X-Gitea-Signature` independently of `OIKB_API_KEY`; it does not need the daemon's
+administrative bearer token. No webhook is automatically created on the server.
+
+Each source keeps its own signing secret. Matching includes the canonical
+instance URL/context path, exact owner/repository, and selected branch. Keep
+`GITEA_URL` consistent with Gitea's configured `ROOT_URL`, which supplies webhook
+repository URLs. Tag pushes, branch deletions, and unrelated events are ignored.
+A matching event schedules each affected KB once and includes all sibling
+sources in that KB. Concurrent triggers may be skipped while a sync is running;
+keep periodic polling enabled to reconcile later changes.
+
+When multiple entries have the same source string (including the same repository
+name on different instances), give them distinct nonempty `name` values. Those
+names identify status, metrics, and history; unique source strings keep their
+existing identifiers. Names must not collide with another effective status key.
 
 ---
 
