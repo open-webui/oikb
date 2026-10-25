@@ -1,4 +1,4 @@
-"""Confluence connector — sync a Confluence space to a Knowledge Base.
+"""Confluence connector — sync a Confluence space (or every space) to a Knowledge Base.
 
 Supports Cloud REST API v2 (default) and Server/Data Center REST API v1.
 Set CONFLUENCE_API_VERSION=v1 for Server/Data Center. Authentication uses
@@ -19,6 +19,11 @@ from urllib.parse import parse_qsl, urlsplit
 import httpx
 
 from oikb.connectors import BaseConnector, ManifestEntry, SourceFileUnavailable
+
+# Sentinel space_key meaning "every space the credentials can see", instead of
+# one named space. Confluence space keys cannot contain "*", so this can never
+# collide with a real key.
+_ALL_SPACES = "*"
 
 # A link's visible label is the title of another page in the space, which syncs
 # as its own file. Dropped with the link so a section index does not become a
@@ -71,14 +76,25 @@ def _storage_to_text(storage_html: str) -> str:
 
 
 class ConfluenceConnector(BaseConnector):
-    """Sync pages from a Confluence space.
+    """Sync pages and blog posts from a Confluence space — or every space —
+    to a Knowledge Base.
+
+    Blog posts are always synced alongside pages, but never mixed into the
+    page structure: they get their own "blogposts/YYYY/MM/" subfolder (by
+    creation date), mirroring how Confluence organizes its own blog archive,
+    since posts have no page hierarchy of their own to place them by.
 
     Args:
-        space_key: Confluence space key (e.g. "ENG").
+        space_key: Confluence space key (e.g. "ENG"), or "*" to sync every
+            space the credentials can see. When syncing every space, each
+            space's content is placed under a subfolder named after that
+            space's key, in addition to whatever `structure` adds within it.
         base_url:  Confluence instance URL (or CONFLUENCE_URL env var).
         user:      Confluence user email (or CONFLUENCE_USER env var).
         token:     Confluence API token (or CONFLUENCE_TOKEN env var).
-        structure: "flat" or "hierarchical" manifest paths.
+        structure: "flat" or "hierarchical" manifest paths for pages within
+            a space. Does not affect blog posts, which are always filed
+            under their own dated "blogposts/" subfolder.
         api_version: "v1" or "v2" (or CONFLUENCE_API_VERSION, default "v2").
     """
 
@@ -93,8 +109,11 @@ class ConfluenceConnector(BaseConnector):
     ):
         if structure not in {"flat", "hierarchical"}:
             raise ValueError("structure must be 'flat' or 'hierarchical'")
+        if not space_key:
+            raise ValueError("space_key is required (a space key, or '*' for every space)")
         self.space_key = space_key
         self.structure = structure
+        self._all_spaces = space_key == _ALL_SPACES
         self._api_version = (api_version or os.environ.get("CONFLUENCE_API_VERSION", "v2")).lower()
         if self._api_version not in {"v1", "v2"}:
             raise ValueError("CONFLUENCE_API_VERSION must be 'v1' or 'v2'")
@@ -127,8 +146,10 @@ class ConfluenceConnector(BaseConnector):
             timeout=60.0,
         )
 
-        # Resolve space key to numeric ID (v2 API requires ID).
-        if self._api_version == "v2" and not self.space_key.isdecimal():
+        # Resolve space key to numeric ID (v2 API requires ID). Not needed
+        # when syncing every space: each space's own ID is read straight off
+        # the space-listing response in _list_spaces().
+        if self._api_version == "v2" and not self._all_spaces and not self.space_key.isdecimal():
             try:
                 resp = self._http.get(
                     "/api/v2/spaces", params={"keys": [self.space_key]}
@@ -147,19 +168,116 @@ class ConfluenceConnector(BaseConnector):
                 self._http.close()
                 raise
 
-        # Cache page content for read_file.
-        self._page_cache: dict[str, str] = {}
+        # Cache page/blogpost content for read_file, keyed by manifest
+        # display_path -> (content id, "page" | "blogpost"). The type is
+        # needed because v2 has separate single-item endpoints per type.
+        self._page_cache: dict[str, tuple[str, str]] = {}
 
     def build_manifest(self) -> list[ManifestEntry]:
-        """List all pages in the space and build a manifest."""
+        """List all pages and blog posts (in the space, or every space)."""
         self._page_cache.clear()
-        pages: list[dict[str, Any]] = []
+        entries: list[ManifestEntry] = []
+
+        for query_key, folder in self._list_spaces():
+            pages = self._fetch_content(query_key, "page")
+            blogposts = self._fetch_content(query_key, "blogpost")
+            pages_by_id = {str(page["id"]): page for page in pages}
+
+            space_items: list[tuple[dict[str, Any], str]] = [
+                (page, "page") for page in pages
+            ] + [(post, "blogpost") for post in blogposts]
+            space_entries = [
+                self._content_entry(item, pages_by_id, folder, content_type)
+                for item, content_type in space_items
+            ]
+
+            # Collisions can only happen within the same space folder, so dedupe
+            # per space rather than across the whole (possibly multi-space) batch.
+            counts = Counter(entry.display_path for entry in space_entries)
+            reserved = set(counts)
+            for index, ((item, content_type), entry) in enumerate(
+                zip(space_items, space_entries)
+            ):
+                if counts[entry.display_path] > 1:
+                    # Rename every colliding title so API ordering cannot change identity.
+                    stem = entry.filename.removesuffix(".txt") + f"_{item['id']}"
+                    candidate = replace(entry, filename=f"{stem}.txt")
+                    while candidate.display_path in reserved:
+                        stem += "_"
+                        candidate = replace(entry, filename=f"{stem}.txt")
+                    entry = space_entries[index] = candidate
+                    reserved.add(entry.display_path)
+                self._page_cache[entry.display_path] = (str(item["id"]), content_type)
+
+            entries.extend(space_entries)
+
+        entries.sort(key=lambda e: e.display_path)
+        return entries
+
+    def _list_spaces(self) -> list[tuple[str, str]]:
+        """Return (query_key, folder_name) pairs, one per space to sync.
+
+        query_key is what _fetch_pages() needs to list that space's pages (a
+        numeric space ID for v2, a space key for v1). folder_name is the
+        subfolder to file that space's pages under — empty when syncing a
+        single named space (unchanged, root-level behavior), or the space's
+        key when syncing every space.
+        """
+        if not self._all_spaces:
+            return [(self.space_key, "")]
+
+        spaces: list[dict[str, Any]] = []
+        if self._api_version == "v1":
+            start = 0
+            while True:
+                resp = self._http.get("/rest/api/space", params={"start": start, "limit": 100})
+                resp.raise_for_status()
+                data = resp.json()
+                results = data.get("results", [])
+                spaces.extend(results)
+                if not results or data.get("_links", {}).get("next") is None:
+                    break
+                start += len(results)
+            return [(space["key"], self._safe_name(space["key"])) for space in spaces]
+
+        cursor = None
+        while True:
+            params: dict[str, Any] = {"limit": 250}
+            if cursor:
+                params["cursor"] = cursor
+            resp = self._http.get("/api/v2/spaces", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            results = data.get("results", [])
+            spaces.extend(results)
+
+            next_link = data.get("_links", {}).get("next")
+            if not next_link:
+                break
+            next_value = dict(parse_qsl(urlsplit(next_link).query)).get("cursor")
+            if not results or not next_value or cursor == next_value:
+                raise ValueError("Invalid Confluence pagination link")
+            cursor = next_value
+
+        return [
+            (str(space["id"]), self._safe_name(space.get("key", space["id"])))
+            for space in spaces
+        ]
+
+    def _fetch_content(self, space_query_key: str, content_type: str) -> list[dict[str, Any]]:
+        """List all pages or blog posts in one space.
+
+        space_query_key is a numeric space ID for v2, a space key for v1.
+        content_type is "page" or "blogpost".
+        """
+        items: list[dict[str, Any]] = []
         params: dict[str, Any] = {"limit": 250}
-        endpoint = f"/api/v2/spaces/{self.space_key}/pages"
+        endpoint = f"/api/v2/spaces/{space_query_key}/{content_type}s"
         if self._api_version == "v1":
             endpoint = "/rest/api/content"
-            params.update(spaceKey=self.space_key, type="page", start=0, expand="ancestors,version")
-        seen_pages: set[str] = set()
+            expand = "ancestors,version" if content_type == "page" else "version,history"
+            params.update(spaceKey=space_query_key, type=content_type, start=0, expand=expand)
+        seen: set[str] = set()
 
         while True:
             resp = self._http.get(endpoint, params=params)
@@ -167,12 +285,12 @@ class ConfluenceConnector(BaseConnector):
             data = resp.json()
 
             results = data["results"]
-            for page in results:
-                page_id = str(page["id"])
-                if page_id in seen_pages:
-                    raise ValueError(f"Repeated Confluence page in pagination: {page_id}")
-                seen_pages.add(page_id)
-            pages.extend(results)
+            for item in results:
+                item_id = str(item["id"])
+                if item_id in seen:
+                    raise ValueError(f"Repeated Confluence {content_type} in pagination: {item_id}")
+                seen.add(item_id)
+            items.extend(results)
 
             # Handle pagination.
             next_link = data.get("_links", {}).get("next")
@@ -187,33 +305,26 @@ class ConfluenceConnector(BaseConnector):
                 raise ValueError("Confluence pagination did not advance")
             params[parameter] = next_value
 
-        pages_by_id = {str(page["id"]): page for page in pages}
-        entries = [self._page_entry(page, pages_by_id) for page in pages]
-        counts = Counter(entry.display_path for entry in entries)
-        reserved = set(counts)
-        for index, (page, entry) in enumerate(zip(pages, entries)):
-            if counts[entry.display_path] > 1:
-                # Rename every colliding title so API ordering cannot change identity.
-                stem = entry.filename.removesuffix(".txt") + f"_{page['id']}"
-                candidate = replace(entry, filename=f"{stem}.txt")
-                while candidate.display_path in reserved:
-                    stem += "_"
-                    candidate = replace(entry, filename=f"{stem}.txt")
-                entry = entries[index] = candidate
-                reserved.add(entry.display_path)
-            self._page_cache[entry.display_path] = str(page["id"])
-        entries.sort(key=lambda e: e.display_path)
-        return entries
+        return items
 
-    def _page_entry(
-        self, page: dict[str, Any], pages_by_id: dict[str, dict[str, Any]]
+    def _content_entry(
+        self,
+        item: dict[str, Any],
+        pages_by_id: dict[str, dict[str, Any]],
+        folder: str,
+        content_type: str,
     ) -> ManifestEntry:
-        page_id = str(page["id"])
-        title = page["title"]
-        version = page.get("version", {}).get("number", 0)
-        checksum = hashlib.sha256(f"{page_id}:v{version}".encode()).hexdigest()[:16]
+        item_id = str(item["id"])
+        title = item["title"]
+        version = item.get("version", {}).get("number", 0)
+        # Content IDs are unique across pages and blog posts, so the checksum
+        # format is unchanged from before blog posts existed.
+        checksum = hashlib.sha256(f"{item_id}:v{version}".encode()).hexdigest()[:16]
         filename = self._safe_name(title) + ".txt"
-        path = self._page_path(page, pages_by_id)
+        content_path = (
+            self._blogpost_folder(item) if content_type == "blogpost" else self._page_path(item, pages_by_id)
+        )
+        path = self._join_path(folder, content_path)
         return ManifestEntry(filename=filename, path=path, checksum=checksum, size=0)
 
     def _page_path(
@@ -239,25 +350,44 @@ class ConfluenceConnector(BaseConnector):
             parent_id = parent.get("parentId")
         return "/".join(reversed(ancestors))
 
+    def _blogpost_folder(self, item: dict[str, Any]) -> str:
+        """Blog posts have no page hierarchy, so file them under
+        blogposts/YYYY/MM by creation date — mirroring how Confluence's own
+        blog archive is organized — regardless of the `structure` setting.
+        """
+        date = (
+            item.get("history", {}).get("createdDate", "")
+            if self._api_version == "v1"
+            else item.get("createdAt", "")
+        )
+        if len(date) >= 7 and date[4] == "-":
+            return f"blogposts/{date[:4]}/{date[5:7]}"
+        return "blogposts"
+
     @staticmethod
     def _safe_name(name: str | None) -> str:
         safe = re.sub(r'[<>:"/\\|?*]', "_", name or "Untitled").strip()
         return safe or "Untitled"
 
     @staticmethod
+    def _join_path(*parts: str) -> str:
+        return "/".join(p for p in parts if p)
+
+    @staticmethod
     def _entry_key(path: str, filename: str) -> str:
         return f"{path}/{filename}" if path else filename
 
     def read_file(self, path: str, filename: str) -> bytes:
-        """Fetch a page's content and return as text."""
-        page_id = self._page_cache.get(self._entry_key(path, filename))
-        if not page_id:
+        """Fetch a page's or blog post's content and return as text."""
+        cached = self._page_cache.get(self._entry_key(path, filename))
+        if not cached:
             raise FileNotFoundError(f"Page not found: {filename}")
+        content_id, content_type = cached
 
         if self._api_version == "v1":
-            resp = self._http.get(f"/rest/api/content/{page_id}", params={"expand": "body.storage"})
+            resp = self._http.get(f"/rest/api/content/{content_id}", params={"expand": "body.storage"})
         else:
-            resp = self._http.get(f"/api/v2/pages/{page_id}", params={"body-format": "storage"})
+            resp = self._http.get(f"/api/v2/{content_type}s/{content_id}", params={"body-format": "storage"})
         resp.raise_for_status()
         data = resp.json()
 
@@ -284,16 +414,24 @@ def parse_confluence_source(source: str) -> dict[str, str | None]:
         confluence:ENG
         confluence:https://company.atlassian.net/ENG
         confluence:ENG?structure=hierarchical
+        confluence:*                                    # every space
+        confluence:*?structure=hierarchical              # every space, hierarchical within each
+        confluence:https://company.atlassian.net         # every space (host with no path)
     """
     source = source.removeprefix("confluence:")
     is_url = source.startswith(("http://", "https://"))
     parsed = urlsplit(source if is_url else f"confluence://{source}")
-    base_path = ""
-    space_key = parsed.netloc
+
     if is_url:
         base_path, _, space_key = parsed.path.rstrip("/").rpartition("/")
-    if not space_key or (not is_url and parsed.path):
-        raise ValueError("Invalid Confluence source. Expected: confluence:SPACEKEY")
+        if not space_key:
+            # Host only, no space in the path: sync every space on it.
+            space_key, base_path = _ALL_SPACES, ""
+    else:
+        base_path = ""
+        space_key = parsed.netloc
+        if not space_key or parsed.path:
+            raise ValueError("Invalid Confluence source. Expected: confluence:SPACEKEY")
 
     params = dict(parse_qsl(parsed.query, keep_blank_values=True))
     unknown = set(params) - {"structure"}
