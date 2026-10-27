@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 import pytest
 import respx
@@ -18,12 +20,16 @@ def _sharepoint_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SHAREPOINT_CLIENT_SECRET", "secret")
 
 
-def _mock_graph(router: respx.MockRouter) -> None:
+def _mock_site(router: respx.MockRouter) -> None:
     router.post("https://login.microsoftonline.com/tenant/oauth2/v2.0/token").respond(
         json={"access_token": "token"}
     )
     router.get(f"{GRAPH}/sites/contoso.sharepoint.com:/sites/Team").respond(json={"id": "site-id"})
     router.get(f"{GRAPH}/sites/site-id/drives").respond(json={"value": [{"id": "drive-id", "name": "Docs"}]})
+
+
+def _mock_graph(router: respx.MockRouter) -> None:
+    _mock_site(router)
     router.get(f"{GRAPH}/drives/drive-id/root/children").respond(
         json={
             "value": [
@@ -140,3 +146,56 @@ def test_checksum_is_the_unquoted_etag(respx_mock: respx.MockRouter) -> None:
 @respx.mock(assert_all_called=False)
 def test_checksum_is_empty_without_etag_or_ctag(respx_mock: respx.MockRouter) -> None:
     assert _manifest_for(respx_mock, {})[0].checksum == ""
+
+
+def _file(name: str) -> dict[str, Any]:
+    return {"name": name, "file": {}, "size": 1}
+
+
+def _folder(name: str) -> dict[str, Any]:
+    return {"name": name, "folder": {}}
+
+
+def _children(router: respx.MockRouter, path: str, *pages: list[dict[str, Any]]) -> respx.Route:
+    """Serve a children listing split into pages chained by @odata.nextLink, as Graph does."""
+    responses = []
+    for number, items in enumerate(pages, start=1):
+        body: dict[str, Any] = {"value": items}
+        if number < len(pages):
+            body["@odata.nextLink"] = f"{GRAPH}{path}?$skiptoken={number}"
+        responses.append(httpx.Response(200, json=body))
+    return router.get(f"{GRAPH}{path}").mock(side_effect=responses)
+
+
+@respx.mock
+def test_build_manifest_follows_next_link_through_every_page(respx_mock: respx.MockRouter) -> None:
+    _mock_site(respx_mock)
+    root = _children(
+        respx_mock,
+        "/drives/drive-id/root/children",
+        [_file("a.pdf"), _folder("Reports")],
+        [],  # A page may be empty and still link to the next one.
+        [_file("z.pdf"), _folder("Archive")],
+    )
+    _children(respx_mock, "/drives/drive-id/root:/Reports:/children", [_file("q1.xlsx")])
+    _children(
+        respx_mock,
+        "/drives/drive-id/root:/Archive:/children",
+        [_file("2024.xlsx")],
+        [_file("2025.xlsx")],
+    )
+
+    manifest = _resolve_connector(SOURCE).build_manifest()
+
+    assert [entry.display_path for entry in manifest] == [
+        "Archive/2024.xlsx",
+        "Archive/2025.xlsx",
+        "Reports/q1.xlsx",
+        "a.pdf",
+        "z.pdf",
+    ]
+    assert [str(call.request.url) for call in root.calls] == [
+        f"{GRAPH}/drives/drive-id/root/children",
+        f"{GRAPH}/drives/drive-id/root/children?$skiptoken=1",
+        f"{GRAPH}/drives/drive-id/root/children?$skiptoken=2",
+    ]
