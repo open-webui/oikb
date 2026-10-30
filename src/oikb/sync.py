@@ -131,6 +131,28 @@ def _fmt_size(n: int) -> str:
     return f"{n:.1f} TB"
 
 
+def _file_already_indexed(
+    client: OikbClient, kb_id: str, manifest: list[ManifestEntry], path: str, filename: str
+) -> bool:
+    """Return True if Open Web UI already linked + indexed this file.
+
+    On a timeout / transport error (with synchronous processing,
+    ``process_in_background=False``) we never receive the upload response, so we
+    don't know the server-side file id.
+    Re-running the KB diff tells us whether the file is now bound via
+    ``knowledge_file`` (i.e. fully processed). If so, re-uploading it would only
+    trigger a duplicate-content error, so we treat the upload as succeeded.
+    """
+    try:
+        diff = client.sync_diff(kb_id, [e.to_dict() for e in manifest])
+    except Exception:
+        return False
+    for item in diff.get("added", []) + diff.get("modified", []):
+        if item.get("path") == path and item.get("filename") == filename:
+            return False
+    return True
+
+
 def run_sync(
     client: OikbClient,
     connector: BaseConnector,
@@ -141,6 +163,7 @@ def run_sync(
     manifest_filter: Callable[[list[ManifestEntry]], list[ManifestEntry]] | None = None,
     concurrency: int = 1,
     cancel_requested: Callable[[], bool] | None = None,
+    process_in_background: bool = True,
 ) -> SyncResult:
     """Execute a full incremental sync.
 
@@ -151,6 +174,11 @@ def run_sync(
       4. Cleanup stale files (delete before upload)
       5. Create missing directories
       6. Upload added + modified files
+
+    ``process_in_background=False`` uploads each file with Open Web UI's
+    ``process_in_background=false`` query param, so the upload call blocks
+    until the file is parsed/embedded/linked. This limits concurrent embedding
+    streams to the upload concurrency (instead of unbounded range).
     """
     result = SyncResult()
     result.errors = []
@@ -160,6 +188,7 @@ def run_sync(
         return _run_sync_inner(
             client, connector, kb_id, dry_run, verbose, quiet,
             manifest_filter, concurrency, result, cancel_requested,
+            process_in_background,
         )
     finally:
         connector.close()
@@ -176,6 +205,7 @@ def _run_sync_inner(
     concurrency: int,
     result: SyncResult,
     cancel_requested: Callable[[], bool] | None,
+    process_in_background: bool = True,
 ) -> SyncResult:
     """Inner sync logic, separated for clean connector cleanup."""
     show_progress = not quiet and not dry_run
@@ -364,6 +394,7 @@ def _run_sync_inner(
                     kb_id=kb_id,
                     file_hash=manifest_entry.checksum,
                     directory_id=directory_id,
+                    process_in_background=process_in_background,
                 )
                 if progress is not None:
                     progress.update(task_id, advance=1, description=f"[cyan]{display}[/cyan]")
@@ -389,6 +420,23 @@ def _run_sync_inner(
                 except ValueError:
                     pass
                 last_err = RuntimeError(f"{e} — {detail}") if detail else e
+                break
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                # Transient failure (timeout / connection reset). With
+                # synchronous processing (process_in_background=False) the
+                # server-side work is NOT
+                # cancelled on client disconnect, so the file may already be
+                # processed. Before retrying, check the diff — if the file is
+                # now indexed, treat the upload as succeeded (a re-upload would
+                # otherwise trigger a duplicate-content error, Problem #1).
+                if attempt < 2:
+                    if _file_already_indexed(client, kb_id, manifest, path, filename):
+                        return (change_type, None)
+                    time.sleep(2 ** attempt)
+                    check_stop()
+                    last_err = e
+                    continue
+                last_err = e
                 break
             except SyncCancelled:
                 raise
