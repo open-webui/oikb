@@ -225,6 +225,12 @@ def _resolve_connector(
         parsed = parse_freshdesk_source(source)
         return FreshdeskConnector(domain=parsed.get("domain"))
 
+    if source.startswith("zammad:"):
+        from oikb.connectors.zammad import ZammadConnector, parse_zammad_source
+        parsed = parse_zammad_source(source)
+        parsed["base_url"] = auth.get("base_url") or parsed["base_url"]
+        return ZammadConnector(**parsed, **{k: v for k, v in auth.items() if k != "base_url"})
+
     if source.startswith("asana:"):
         from oikb.connectors.asana import AsanaConnector, parse_asana_source
         parsed = parse_asana_source(source)

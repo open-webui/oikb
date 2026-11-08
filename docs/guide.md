@@ -25,6 +25,7 @@ A complete guide to syncing content into Open WebUI Knowledge Bases.
   - [Cloud Storage (S3 / GCS / Azure)](#cloud-storage-s3--gcs--azure)
   - [SharePoint](#sharepoint)
   - [Nextcloud](#nextcloud)
+  - [Zammad](#zammad)
   - [All Connectors](#all-connectors)
 - [Filtering](#filtering)
   - [Include / Exclude Globs](#include--exclude-globs)
@@ -597,16 +598,52 @@ Optional settings:
 | `ZOTERO_WEBDAV_URL` | WebDAV Zotero storage base; fetches `<attachment-key>.zip` on Zotero file 404 |
 | `ZOTERO_WEBDAV_USER` / `ZOTERO_WEBDAV_PASSWORD` | WebDAV credentials |
 
+### Zammad
+
+Sync answers from a Zammad knowledge base:
+
+```bash
+export ZAMMAD_URL=https://support.example.com
+export ZAMMAD_TOKEN=your-token
+
+oikb sync zammad: --kb-id your-kb-id
+oikb sync 'zammad:support.example.com?states=published,internal' --kb-id your-agent-kb-id
+```
+
+| Setting | Description |
+|---|---|
+| `auth.base_url` / `ZAMMAD_URL` | Zammad root URL; a URL in the source (`zammad:support.example.com`) works too. |
+| `auth.token` / `ZAMMAD_TOKEN` | Access token with `knowledge_base.reader`; `knowledge_base.editor` is needed for drafts and archived answers. |
+| `?states=` | Comma-separated answer states to sync: `published` (default), `internal`, `draft`, `archived`. |
+
+Only published answers sync by default, so a Knowledge Base used by a
+customer-facing model does not pick up internal answers. Add `internal` for a
+Knowledge Base used by agents.
+
+Each answer becomes `<category>/<subcategory>/<answer-id>_<title>.txt` with the
+title as a heading and the answer body as plain text. A multilingual knowledge
+base syncs every translation under a locale folder such as `de-de/`. A sync only
+downloads answers whose answer or translation changed. Attachments are not synced.
+
+```yaml
+sources:
+  - name: zammad-public
+    source: zammad:support.example.com
+    kb-id: your-kb-id
+    auth:
+      token: ${ZAMMAD_TOKEN}
+```
+
 ### All Connectors
 
-47 connectors available. See the full list:
+48 connectors available. See the full list:
 
 | Category | Sources |
 |---|---|
 | **Git** | GitHub, GitLab, Gitea, Bitbucket |
 | **Cloud Storage** | S3, GCS, Azure Blob, Dropbox, R2, Google Drive, SharePoint, Nextcloud, Egnyte, Oracle Cloud |
 | **Wikis & KBs** | Confluence, Notion, BookStack, Discourse, GitBook, Guru, Outline, Slab, Document360, DokuWiki, Google Sites |
-| **Ticketing** | Jira, Linear, Zendesk, Freshdesk, Asana, ClickUp, Airtable, ServiceNow, ProductBoard |
+| **Ticketing** | Jira, Linear, Zendesk, Freshdesk, Zammad, Asana, ClickUp, Airtable, ServiceNow, ProductBoard |
 | **Messaging** | Slack, Discord, Microsoft Teams, Gmail, Zulip |
 | **Meetings** | Gong, Fireflies |
 | **Forums** | XenForo |

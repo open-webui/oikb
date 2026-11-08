@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Zammad knowledge base**: sync answers from a Zammad knowledge base with `zammad:`. Answers keep their category folders, multilingual knowledge bases sync each language into its own folder, and only changed answers are downloaded. Published answers sync by default; internal, draft, and archived answers can be added with `?states=`.
+
 ## [0.6.0] - 2026-10-21
 
 ### Added
