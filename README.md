@@ -1,6 +1,6 @@
 # 📚 oikb
 
-Keep your [Open WebUI](https://github.com/open-webui/open-webui) Knowledge Bases in sync. Point it at a local directory, a GitHub or Gitea repo, a Confluence space, an S3 bucket, Zotero, or any of 47 supported sources. Only new and modified files are uploaded via incremental source-checksum diffing.
+Keep your [Open WebUI](https://github.com/open-webui/open-webui) Knowledge Bases in sync. Point it at a local directory, a GitHub or Gitea repo, a Confluence space, an S3 bucket, Zotero, or any of 48 supported sources. Only new and modified files are uploaded via incremental source-checksum diffing.
 
 > [!IMPORTANT]
 > Requires **Open WebUI 0.9.6+**
@@ -136,14 +136,14 @@ services:
       start_period: 15s
 ```
 
-## 47 Connectors
+## 48 Connectors
 
 | Category | Sources |
 |---|---|
 | **Code Repos** | GitHub, GitLab, Gitea, Bitbucket |
 | **Cloud Storage** | S3, GCS, Azure Blob, Dropbox, R2, Google Drive, SharePoint, Nextcloud, Egnyte, Oracle Cloud |
 | **Wikis & KBs** | Confluence, Notion, BookStack, Discourse, GitBook, Guru, Outline, Slab, Document360, DokuWiki, Google Sites |
-| **Ticketing** | Jira, Linear, Zendesk, Freshdesk, Asana, ClickUp, Airtable, ServiceNow, ProductBoard |
+| **Ticketing** | Jira, Linear, Zendesk, Freshdesk, Zammad, Asana, ClickUp, Airtable, ServiceNow, ProductBoard |
 | **Messaging** | Slack, Discord, Microsoft Teams, Gmail, Zulip |
 | **Meetings** | Gong, Fireflies |
 | **Forums** | XenForo |
@@ -179,6 +179,21 @@ and `auth.token` override the environment; `--url` and `--token` always configur
 Open WebUI. Repository scans and downloads use the same pinned commit. Wiki
 pages are checked and cached before syncing. See the [Gitea guide](docs/guide.md#gitea)
 for shared KBs, webhooks, compatibility tests, and wiki limitations.
+
+### Zammad
+
+Sync knowledge base answers from Zammad (no extra dependency):
+
+```bash
+export ZAMMAD_URL=https://support.example.com
+export ZAMMAD_TOKEN=your-token   # Needs knowledge_base.reader
+
+oikb sync zammad: --kb-id your-kb-id
+oikb sync 'zammad:support.example.com?states=published,internal' --kb-id your-agent-kb-id
+```
+
+Only published answers sync by default. See the [Zammad guide](docs/guide.md#zammad)
+for answer states, paths, and multilingual knowledge bases.
 
 ### Zotero
 
