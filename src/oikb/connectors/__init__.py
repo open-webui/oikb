@@ -14,7 +14,7 @@ class ManifestEntry:
         filename: Basename of the file (e.g. "readme.md").
         path:     Directory path relative to source root (e.g. "docs/api").
                   Empty string for root-level files.
-        checksum: SHA-256 hex digest of the file content.
+        checksum: Stable source checksum or version fingerprint (e.g. a Git blob ID).
         size:     File size in bytes.
     """
 

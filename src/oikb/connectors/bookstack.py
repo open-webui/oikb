@@ -49,7 +49,8 @@ class BookStackConnector(BaseConnector):
         ts = token_secret or os.environ.get("BOOKSTACK_TOKEN_SECRET", "")
         if not self._url or not tid or not ts:
             raise ValueError("BookStack credentials required. Set BOOKSTACK_URL, BOOKSTACK_TOKEN_ID, BOOKSTACK_TOKEN_SECRET.")
-        self._http = httpx.Client(base_url=self._url, headers={"Authorization": f"Token {tid}:{ts}"}, timeout=30.0)
+        verify_ssl = os.environ.get("BOOKSTACK_VERIFY_SSL", "true").lower() not in {"false", "0", "no"}
+        self._http = httpx.Client(base_url=self._url, headers={"Authorization": f"Token {tid}:{ts}"}, timeout=30.0, verify=verify_ssl,)
         self.include_ids = include_ids or []
         self.exclude_ids = set(exclude_ids or [])
         self.scope = scope

@@ -1,9 +1,12 @@
+import mimetypes
 from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
+import respx
 from click.testing import CliRunner
 
+from oikb.client import OikbClient
 from oikb.connectors import BaseConnector, ManifestEntry
 from oikb.kb_sync import group_entries_by_kb, run_entries_sync
 from oikb.sync import SyncCancelled, SyncResult
@@ -145,3 +148,63 @@ def test_upload_error_includes_server_detail():
     client.upload_file.side_effect = httpx.HTTPStatusError("Bad Request", request=response.request, response=response)
     result = run_entries_sync(client, [{"source": "one", "kb-id": "kb"}], resolve_connector=lambda *a, **kw: Source({"a.txt": b"a"}), quiet=True)
     assert "extraction failed" in result.errors[0]
+
+
+@respx.mock
+def test_upload_sends_markdown_as_text_without_system_mime_types(monkeypatch):
+    monkeypatch.setattr(mimetypes, "guess_type", lambda *a, **kw: (None, None))
+    route = respx.post("https://webui.example/api/v1/files/").mock(return_value=httpx.Response(200, json={"id": "f"}))
+    OikbClient("https://webui.example", "token").upload_file(b"| a |\n| - |\n", "doc.md", "kb", "hash")
+    assert b"Content-Type: text/markdown" in route.calls.last.request.content
+
+
+def _write_config(tmp_path, entries):
+    import yaml
+
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    config = tmp_path / "oikb.yaml"
+    config.write_text(yaml.safe_dump({"sources": entries}))
+    return config
+
+
+def test_validate_reports_kb_group_errors(tmp_path):
+    import oikb.cli as cli
+
+    docs = str(tmp_path / "docs")
+    config = _write_config(tmp_path, [
+        {"name": "one", "source": docs, "kb-id": "kb"},
+        {"name": "two", "source": docs, "kb-id": "kb", "url": "https://other.example"},
+    ])
+
+    result = CliRunner().invoke(cli.cli, ["validate", "--config", str(config)])
+
+    assert result.exit_code == 1, result.output
+    assert "same url and token" in result.output
+
+
+def test_validate_accepts_consistent_kb_group(tmp_path):
+    import oikb.cli as cli
+
+    docs = str(tmp_path / "docs")
+    config = _write_config(tmp_path, [
+        {"name": "one", "source": docs, "kb-id": "kb"},
+        {"name": "two", "source": docs, "kb-id": "kb"},
+        {"name": "three", "source": docs, "kb-id": "other", "url": "https://other.example"},
+    ])
+
+    result = CliRunner().invoke(cli.cli, ["validate", "--config", str(config)])
+
+    assert result.exit_code == 0, result.output
+    assert "3 entry(s) valid" in result.output
+
+
+def test_validate_does_not_repeat_missing_field_errors(tmp_path):
+    import oikb.cli as cli
+
+    config = _write_config(tmp_path, [{"name": "broken", "kb-id": "kb"}])
+
+    result = CliRunner().invoke(cli.cli, ["validate", "--config", str(config)])
+
+    assert result.exit_code == 1
+    assert result.output.count("missing source or kb-id") == 1
+    assert "Each source requires" not in result.output

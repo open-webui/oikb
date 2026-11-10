@@ -2,12 +2,12 @@ name: Docker (GHCR)
 
 on:
   push:
-    branches: [main, release]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
   group: docker-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
@@ -18,12 +18,15 @@ permissions:
 
 jobs:
   read-version:
-    if: github.ref == 'refs/heads/release'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.pkg.outputs.version }}
+      is_new_version: ${{ steps.version.outputs.is_new_version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Read version
         id: pkg
@@ -35,6 +38,22 @@ jobs:
           print(m.group(1))
           ")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check release version
+        id: version
+        env:
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          if git rev-parse "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            TAG_SHA=$(git rev-list -n 1 "v${VERSION}")
+            if [ "$TAG_SHA" = "$GITHUB_SHA" ]; then
+              echo "is_new_version=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "is_new_version=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "is_new_version=true" >> "$GITHUB_OUTPUT"
+          fi
 
   build-dev:
     if: github.ref == 'refs/heads/main'
@@ -103,7 +122,7 @@ jobs:
           retention-days: 1
 
   merge-dev:
-    if: github.ref == 'refs/heads/main'
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
     needs: build-dev
     runs-on: ubuntu-latest
     steps:
@@ -129,11 +148,13 @@ jobs:
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           tags=("${{ env.IMAGE }}:dev" "${{ env.IMAGE }}:dev-${SHORT_SHA}")
+          # A flavor publishes only when every one of its arches built.
+          [ "$(ls | wc -l)" -eq 2 ] || { echo "expected 2 digests, found: $(ls)"; exit 1; }
           docker buildx imagetools create $(printf -- '-t %s ' "${tags[@]}") \
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)
 
   merge-dev-alpine:
-    if: github.ref == 'refs/heads/main'
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
     needs: build-dev
     runs-on: ubuntu-latest
     steps:
@@ -159,12 +180,14 @@ jobs:
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           tags=("${{ env.IMAGE }}:dev-alpine" "${{ env.IMAGE }}:dev-${SHORT_SHA}-alpine")
+          # A flavor publishes only when every one of its arches built.
+          [ "$(ls | wc -l)" -eq 2 ] || { echo "expected 2 digests, found: $(ls)"; exit 1; }
           docker buildx imagetools create $(printf -- '-t %s ' "${tags[@]}") \
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)
 
   build-release:
     needs: read-version
-    if: github.ref == 'refs/heads/release'
+    if: github.ref == 'refs/heads/main' && needs.read-version.outputs.is_new_version == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -231,7 +254,7 @@ jobs:
 
   merge-release:
     needs: [read-version, build-release]
-    if: github.ref == 'refs/heads/release'
+    if: ${{ !cancelled() && needs.read-version.result == 'success' && github.ref == 'refs/heads/main' && needs.read-version.outputs.is_new_version == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Download digests
@@ -257,12 +280,14 @@ jobs:
           VERSION="${{ needs.read-version.outputs.version }}"
           MAJOR_MINOR="${VERSION%.*}"
           tags=("${{ env.IMAGE }}:latest" "${{ env.IMAGE }}:${VERSION}" "${{ env.IMAGE }}:${MAJOR_MINOR}")
+          # A flavor publishes only when every one of its arches built.
+          [ "$(ls | wc -l)" -eq 2 ] || { echo "expected 2 digests, found: $(ls)"; exit 1; }
           docker buildx imagetools create $(printf -- '-t %s ' "${tags[@]}") \
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)
 
   merge-release-alpine:
     needs: [read-version, build-release]
-    if: github.ref == 'refs/heads/release'
+    if: ${{ !cancelled() && needs.read-version.result == 'success' && github.ref == 'refs/heads/main' && needs.read-version.outputs.is_new_version == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Download digests
@@ -288,5 +313,7 @@ jobs:
           VERSION="${{ needs.read-version.outputs.version }}"
           MAJOR_MINOR="${VERSION%.*}"
           tags=("${{ env.IMAGE }}:alpine" "${{ env.IMAGE }}:latest-alpine" "${{ env.IMAGE }}:${VERSION}-alpine" "${{ env.IMAGE }}:${MAJOR_MINOR}-alpine")
+          # A flavor publishes only when every one of its arches built.
+          [ "$(ls | wc -l)" -eq 2 ] || { echo "expected 2 digests, found: $(ls)"; exit 1; }
           docker buildx imagetools create $(printf -- '-t %s ' "${tags[@]}") \
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)

@@ -54,6 +54,7 @@ class SharePointConnector(BaseConnector):
         site: str,
         site_path: str = "",
         library: str = "Documents",
+        root_path: str | None = None,
         tenant_id: str | None = None,
         client_id: str | None = None,
         client_secret: str | None = None,
@@ -64,6 +65,7 @@ class SharePointConnector(BaseConnector):
         self.site = site
         self.site_path = site_path.strip("/")
         self.library = library
+        self.root_path = (root_path or "").strip("/")
 
         tid = tenant_id or os.environ.get("SHAREPOINT_TENANT_ID", "")
         cid = client_id or os.environ.get("SHAREPOINT_CLIENT_ID", "")
@@ -141,16 +143,22 @@ class SharePointConnector(BaseConnector):
 
     def build_manifest(self) -> list[ManifestEntry]:
         entries: list[ManifestEntry] = []
-        self._walk_folder("/", "", entries)
+        self._walk_folder(self.root_path or "/", "", entries)
         entries.sort(key=lambda e: e.display_path)
         return entries
 
     def _walk_folder(self, folder_path: str, prefix: str, entries: list[ManifestEntry]) -> None:
         url = f"/drives/{self._drive_id}/root/children" if folder_path == "/" else f"/drives/{self._drive_id}/root:/{quote(folder_path)}:/children"
-        resp = self._http.get(url)
-        resp.raise_for_status()
+        items: list[dict[str, Any]] = []
+        while url:
+            resp = self._http.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            items.extend(data.get("value", []))
+            # Graph pages large folders; @odata.nextLink is the absolute URL of the next page.
+            url = data.get("@odata.nextLink")
 
-        for item in resp.json().get("value", []):
+        for item in items:
             if "folder" in item:
                 sub = f"{prefix}/{item['name']}" if prefix else item["name"]
                 child_path = f"{folder_path}/{item['name']}" if folder_path != "/" else item["name"]
@@ -160,12 +168,12 @@ class SharePointConnector(BaseConnector):
                 entries.append(ManifestEntry(
                     filename=item["name"],
                     path=prefix,
-                    checksum=etag[:16] if etag else "",
+                    checksum=etag,
                     size=item.get("size", 0),
                 ))
 
     def read_file(self, path: str, filename: str) -> bytes:
-        file_path = f"{path}/{filename}" if path else filename
+        file_path = "/".join(p for p in (self.root_path, path, filename) if p)
         resp = self._http.get(f"/drives/{self._drive_id}/root:/{quote(file_path)}:/content", follow_redirects=True)
         resp.raise_for_status()
         return resp.content

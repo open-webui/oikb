@@ -2,7 +2,7 @@ name: Publish to PyPI
 
 on:
   push:
-    branches: [release]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -85,7 +85,7 @@ jobs:
 
   build:
     needs: preflight
-    if: github.ref == 'refs/heads/release' && (needs.preflight.outputs.publish_needed == 'true' || needs.preflight.outputs.release_assets_needed == 'true')
+    if: github.ref == 'refs/heads/main' && (needs.preflight.outputs.publish_needed == 'true' || needs.preflight.outputs.release_assets_needed == 'true')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -132,7 +132,7 @@ jobs:
 
   publish:
     needs: [preflight, build]
-    if: github.ref == 'refs/heads/release' && needs.preflight.outputs.publish_needed == 'true'
+    if: github.ref == 'refs/heads/main' && needs.preflight.outputs.publish_needed == 'true'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -176,7 +176,7 @@ jobs:
 
   github-release-assets:
     needs: [preflight, build]
-    if: github.ref == 'refs/heads/release' && needs.preflight.outputs.release_assets_needed == 'true'
+    if: github.ref == 'refs/heads/main' && needs.preflight.outputs.release_assets_needed == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
