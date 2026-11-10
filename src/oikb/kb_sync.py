@@ -8,6 +8,7 @@ from typing import Callable
 
 from oikb.client import OikbClient
 from oikb.connectors import BaseConnector, ManifestEntry
+from oikb.history import SyncHistory
 from oikb.sync import SyncCancelled, SyncResult, build_manifest_filter, parse_size, run_sync
 
 
@@ -51,6 +52,7 @@ def run_entries_sync(
     max_file_size: str | None = None,
     concurrency: int = 1,
     cancel_requested: Callable[[], bool] | None = None,
+    history: SyncHistory | None = None,
 ) -> SyncResult:
     """Scan and filter every source before allowing a KB-wide diff or deletion.
 
@@ -105,4 +107,5 @@ def run_entries_sync(
             quiet=quiet,
             concurrency=max(entry.get("concurrency", concurrency) for entry in entries),
             cancel_requested=cancel_requested,
+            history=history,
         )

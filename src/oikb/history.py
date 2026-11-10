@@ -34,6 +34,34 @@ CREATE TABLE IF NOT EXISTS sync_log (
 CREATE INDEX IF NOT EXISTS idx_sync_log_kb_id  ON sync_log(kb_id);
 CREATE INDEX IF NOT EXISTS idx_sync_log_source ON sync_log(source);
 CREATE INDEX IF NOT EXISTS idx_sync_log_status ON sync_log(status);
+
+-- Files whose upload was rejected permanently by the server (4xx). They are
+-- skipped on subsequent syncs until their checksum changes, so a file that
+-- can never be ingested is not re-uploaded on every sync cycle.
+CREATE TABLE IF NOT EXISTS failed_file (
+    kb_id      TEXT NOT NULL,
+    path       TEXT NOT NULL,
+    filename   TEXT NOT NULL,
+    checksum   TEXT NOT NULL,
+    error      TEXT,
+    failed_at  REAL NOT NULL,
+    PRIMARY KEY (kb_id, path, filename)
+);
+
+-- Files successfully handed to the server (upload HTTP 200) whose ingestion
+-- runs asynchronously. Tracked so the next sync can check their server-side
+-- status instead of blindly re-uploading them when the diff reports them as
+-- "added" again (which happens for every file that never gets linked to the
+-- KB — e.g. rejected during async processing).
+CREATE TABLE IF NOT EXISTS uploaded_file (
+    kb_id       TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    filename    TEXT NOT NULL,
+    checksum    TEXT NOT NULL,
+    file_id     TEXT NOT NULL,
+    uploaded_at REAL NOT NULL,
+    PRIMARY KEY (kb_id, path, filename)
+);
 """
 
 
@@ -167,7 +195,7 @@ class SyncHistory:
         """Prune entries older than N days. Returns count deleted."""
         if not self._all_conns:
             return 0
-            
+
         cutoff = time.time() - (older_than_days * 86400)
         with self._get_conn() as conn:
             cursor = conn.execute(
@@ -175,6 +203,135 @@ class SyncHistory:
             )
             conn.commit()
             return cursor.rowcount
+
+    # ── Permanent upload failures ─────────────────────────────
+
+    def record_failure(
+        self,
+        kb_id: str,
+        path: str,
+        filename: str,
+        checksum: str,
+        error: str | None = None,
+    ) -> None:
+        """Record a permanently rejected upload (server 4xx)."""
+        if not self._all_conns:
+            return
+
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO failed_file
+                   (kb_id, path, filename, checksum, error, failed_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (kb_id, path, filename, checksum, error, time.time()),
+            )
+            conn.commit()
+
+    def clear_failure(self, kb_id: str, path: str, filename: str) -> None:
+        """Drop a failure record (e.g. after a successful upload)."""
+        if not self._all_conns:
+            return
+
+        with self._get_conn() as conn:
+            conn.execute(
+                "DELETE FROM failed_file WHERE kb_id = ? AND path = ? AND filename = ?",
+                (kb_id, path, filename),
+            )
+            conn.commit()
+
+    def failed_checksums(self, kb_id: str) -> dict[tuple[str, str], str]:
+        """Map of (path, filename) -> checksum for known failed uploads."""
+        if not self._all_conns:
+            return {}
+
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT path, filename, checksum FROM failed_file WHERE kb_id = ?",
+                (kb_id,),
+            ).fetchall()
+            return {(row["path"], row["filename"]): row["checksum"] for row in rows}
+
+    def list_failures(self, kb_id: str | None = None) -> list[dict[str, Any]]:
+        """List known failed uploads, newest first."""
+        if not self._all_conns:
+            return []
+
+        sql = "SELECT * FROM failed_file"
+        params: list[Any] = []
+        if kb_id:
+            sql += " WHERE kb_id = ?"
+            params.append(kb_id)
+        sql += " ORDER BY failed_at DESC"
+
+        with self._get_conn() as conn:
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(row) for row in rows]
+
+    def clear_failures(self, kb_id: str | None = None) -> int:
+        """Clear failure records (optionally per KB). Returns count deleted."""
+        if not self._all_conns:
+            return 0
+
+        with self._get_conn() as conn:
+            if kb_id:
+                cursor = conn.execute("DELETE FROM failed_file WHERE kb_id = ?", (kb_id,))
+            else:
+                cursor = conn.execute("DELETE FROM failed_file")
+            conn.commit()
+            return cursor.rowcount
+
+    # ── Async upload tracking ─────────────────────────────────
+
+    def record_upload(
+        self,
+        kb_id: str,
+        path: str,
+        filename: str,
+        checksum: str,
+        file_id: str,
+    ) -> None:
+        """Track a file that was accepted by the server (upload HTTP 200)."""
+        if not self._all_conns:
+            return
+
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO uploaded_file
+                   (kb_id, path, filename, checksum, file_id, uploaded_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (kb_id, path, filename, checksum, file_id, time.time()),
+            )
+            conn.commit()
+
+    def untrack_upload(self, kb_id: str, path: str, filename: str) -> None:
+        """Stop tracking an upload (linked, failed, or gone server-side)."""
+        if not self._all_conns:
+            return
+
+        with self._get_conn() as conn:
+            conn.execute(
+                "DELETE FROM uploaded_file WHERE kb_id = ? AND path = ? AND filename = ?",
+                (kb_id, path, filename),
+            )
+            conn.commit()
+
+    def tracked_uploads(self, kb_id: str) -> dict[tuple[str, str], dict[str, str]]:
+        """Map of (path, filename) -> {checksum, file_id} for tracked uploads."""
+        if not self._all_conns:
+            return {}
+
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT path, filename, checksum, file_id FROM uploaded_file WHERE kb_id = ?",
+                (kb_id,),
+            ).fetchall()
+            return {
+                (row["path"], row["filename"]): {
+                    "checksum": row["checksum"],
+                    "file_id": row["file_id"],
+                }
+                for row in rows
+            }
 
     def close(self) -> None:
         """Close all connections in the pool."""

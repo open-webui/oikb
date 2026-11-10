@@ -295,6 +295,7 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
             client, entries, resolve_connector=_resolve_connector,
             dry_run=dry_run, quiet=True,
             cancel_requested=_shutdown_event.is_set if _shutdown_event else None,
+            history=_history,
         )
 
         if dry_run:
@@ -303,6 +304,8 @@ async def _run_entry_locked(entry: dict, dry_run: bool = False) -> dict | None:
                 "modified": result.modified,
                 "deleted": result.deleted,
                 "unmodified": result.unmodified,
+                "skipped_failed": result.skipped_failed,
+                "skipped_pending": result.skipped_pending,
                 "warnings": result.warnings or [],
                 "errors": result.errors or [],
                 "summary": result.summary(),
