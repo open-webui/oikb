@@ -395,11 +395,23 @@ oikb sync confluence:SPACE_KEY --kb-id your-kb-id
 
 # Preserve the Confluence page hierarchy in manifest paths.
 oikb sync 'confluence:SPACE_KEY?structure=hierarchical' --kb-id your-kb-id
+
+# Include a link to each original page in the synced text.
+oikb sync 'confluence:SPACE_KEY?include-source-url=true' --kb-id your-kb-id
 ```
 
 With hierarchical structure enabled, existing `filter.include` and
 `filter.exclude` patterns can select page trees, for example
 `Engineering/Runbooks*`.
+
+The optional `include-source-url=true` adds a `Source:` line before extracted
+page text. It is off by default and can be combined with `structure=hierarchical`.
+The citation title still opens the uploaded copy. Open WebUI can display the
+original link in a Markdown citation snippet when the retrieved chunk includes
+the line. The address also becomes part of the indexed text and can appear
+in model context or exports. It does not grant access to the original page.
+Enabling or disabling the option re-syncs affected pages on the next run, even
+if the Confluence revision did not change.
 
 Cloud uses REST API v2 by default. Set `CONFLUENCE_URL` to your instance URL,
 `CONFLUENCE_USER` to your email, and `CONFLUENCE_TOKEN` to your API token.

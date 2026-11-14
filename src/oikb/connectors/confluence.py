@@ -80,6 +80,7 @@ class ConfluenceConnector(BaseConnector):
         token:     Confluence API token (or CONFLUENCE_TOKEN env var).
         structure: "flat" or "hierarchical" manifest paths.
         api_version: "v1" or "v2" (or CONFLUENCE_API_VERSION, default "v2").
+        include_source_url: prepend the original page link to extracted text.
     """
 
     def __init__(
@@ -90,6 +91,7 @@ class ConfluenceConnector(BaseConnector):
         token: str | None = None,
         structure: str = "flat",
         api_version: str | None = None,
+        include_source_url: bool = False,
     ):
         if structure not in {"flat", "hierarchical"}:
             raise ValueError("structure must be 'flat' or 'hierarchical'")
@@ -120,6 +122,25 @@ class ConfluenceConnector(BaseConnector):
         api_base = self._base_url
         if self._api_version == "v2" and not api_base.endswith("/wiki"):
             api_base += "/wiki"
+        self._source_base = None
+        if include_source_url:
+            # Only expose the configured instance and a numeric page ID. Do
+            # not put upstream _links URLs or authentication data into the KB.
+            parts = urlsplit(self._base_url)
+            if (
+                parts.scheme not in {"http", "https"}
+                or not parts.hostname
+                or parts.username is not None
+                or parts.password is not None
+                or "?" in self._base_url
+                or "#" in self._base_url
+                or any(c.isspace() or c in "<>\\" or ord(c) < 32 for c in self._base_url)
+            ):
+                raise ValueError(
+                    "include-source-url requires an HTTP(S) Confluence instance URL "
+                    "without credentials, query or fragment"
+                )
+            self._source_base = api_base
         self._http = httpx.Client(
             base_url=api_base,
             auth=(self._user, self._token) if self._user else None,
@@ -211,10 +232,20 @@ class ConfluenceConnector(BaseConnector):
         page_id = str(page["id"])
         title = page["title"]
         version = page.get("version", {}).get("number", 0)
-        checksum = hashlib.sha256(f"{page_id}:v{version}".encode()).hexdigest()[:16]
+        fingerprint = f"{page_id}:v{version}"
+        if source_url := self._source_url(page_id):
+            # Reupload when the emitted link changes, even at the same page
+            # version. With no link, preserve the previous default checksum.
+            fingerprint += f"\0source-url-v1\0{source_url}"
+        checksum = hashlib.sha256(fingerprint.encode()).hexdigest()[:16]
         filename = self._safe_name(title) + ".txt"
         path = self._page_path(page, pages_by_id)
         return ManifestEntry(filename=filename, path=path, checksum=checksum, size=0)
+
+    def _source_url(self, page_id: str) -> str | None:
+        if self._source_base and re.fullmatch(r"[0-9]+", page_id):
+            return f"{self._source_base}/pages/viewpage.action?pageId={page_id}"
+        return None
 
     def _page_path(
         self, page: dict[str, Any], pages_by_id: dict[str, dict[str, Any]]
@@ -271,6 +302,8 @@ class ConfluenceConnector(BaseConnector):
                 "page has no text to sync (blank, or only a macro such as a "
                 "children index)"
             )
+        if source_url := self._source_url(page_id):
+            text = f"Source: {source_url}\n\n{text}"
         return text.encode("utf-8")
 
     def close(self) -> None:
@@ -284,6 +317,7 @@ def parse_confluence_source(source: str) -> dict[str, str | None]:
         confluence:ENG
         confluence:https://company.atlassian.net/ENG
         confluence:ENG?structure=hierarchical
+        confluence:ENG?include-source-url=true
     """
     source = source.removeprefix("confluence:")
     is_url = source.startswith(("http://", "https://"))
@@ -296,15 +330,22 @@ def parse_confluence_source(source: str) -> dict[str, str | None]:
         raise ValueError("Invalid Confluence source. Expected: confluence:SPACEKEY")
 
     params = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    unknown = set(params) - {"structure"}
+    unknown = set(params) - {"structure", "include-source-url"}
     if unknown:
         raise ValueError(f"Invalid Confluence source. Unknown parameter: {min(unknown)}")
     structure = params.get("structure", "flat")
     if structure not in {"flat", "hierarchical"}:
         raise ValueError("Invalid Confluence source. Expected structure=flat or structure=hierarchical")
 
-    return {
+    options = {
         "base_url": f"{parsed.scheme}://{parsed.netloc}{base_path}" if is_url else None,
         "space_key": space_key,
         "structure": structure,
     }
+    if "include-source-url" in params:
+        if params["include-source-url"] not in {"true", "false"}:
+            raise ValueError(
+                "Invalid Confluence source. Expected include-source-url=true or include-source-url=false"
+            )
+        options["include_source_url"] = params["include-source-url"]
+    return options
