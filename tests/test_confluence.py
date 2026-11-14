@@ -4,6 +4,7 @@ import httpx
 import pytest
 import respx
 
+from oikb.cli import _resolve_connector
 from oikb.connectors.confluence import ConfluenceConnector, parse_confluence_source
 from oikb.sync import build_manifest_filter
 
@@ -31,11 +32,58 @@ def test_parse_url_source_with_structure() -> None:
     [
         "confluence:ABC?structure=invalid",
         "confluence:ABC?unexpected=value",
+        "confluence:ABC?include-source-url=yes",
     ],
 )
 def test_parse_rejects_invalid_structure(source: str) -> None:
     with pytest.raises(ValueError):
         parse_confluence_source(source)
+
+
+@pytest.mark.parametrize(
+    ("version", "instance", "context", "list_path", "page_path"),
+    [
+        ("v2", "https://test.atlassian.net", "/wiki", "/api/v2/spaces/9/pages", "/api/v2/pages/12"),
+        ("v2", "https://test.atlassian.net/wiki/", "/wiki", "/api/v2/spaces/9/pages", "/api/v2/pages/12"),
+        ("v1", "https://wiki.example/confluence", "/confluence", "/rest/api/content", "/rest/api/content/12"),
+    ],
+)
+@respx.mock
+def test_original_source_url_opt_in(version, instance, context, list_path, page_path):
+    origin = instance.split(context)[0]
+    respx.get(origin + context + list_path).respond(
+        json={"results": [{
+            "id": "12", "title": "Guide", "version": {"number": 1},
+            "_links": {"webui": "https://unrelated.example/download"},
+        }]}
+    )
+    respx.get(origin + context + page_path).respond(
+        json={"body": {"storage": {"value": "<p>Hello</p>"}}}
+    )
+    auth = {"api_version": version, "base_url": instance, "token": "synthetic"}
+    with _resolve_connector("confluence:9", auth=auth) as default:
+        old, = default.build_manifest()
+        assert default.read_file(old.path, old.filename) == b"Hello"
+    with _resolve_connector("confluence:9?structure=hierarchical&include-source-url=true", auth=auth) as linked:
+        added, = linked.build_manifest()
+        assert old.display_path == added.display_path
+        assert old.checksum != added.checksum
+        assert linked.build_manifest()[0].checksum == added.checksum
+        url = origin + context + "/pages/viewpage.action?pageId=12"
+        assert linked.read_file(added.path, added.filename) == f"Source: {url}\n\nHello".encode()
+    with _resolve_connector("confluence:9?include-source-url=false", auth=auth) as disabled:
+        assert disabled.build_manifest()[0].checksum == old.checksum
+        assert disabled.read_file(old.path, old.filename) == b"Hello"
+
+
+@pytest.mark.parametrize("base_url", [
+    "https://user:password@wiki.example",
+    "https://wiki.example?token=synthetic",
+    "https://wiki.example#private",
+])
+def test_original_source_url_refuses_non_public_parts_of_base_url(base_url):
+    with pytest.raises(ValueError, match="without credentials, query or fragment"):
+        ConfluenceConnector("9", base_url=base_url, token="synthetic", include_source_url=True)
 
 
 @respx.mock

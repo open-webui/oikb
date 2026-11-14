@@ -120,6 +120,7 @@ def _resolve_connector(
             token=auth.get("token"),
             api_version=auth.get("api_version"),
             structure=parsed.get("structure", "flat"),
+            include_source_url=parsed.get("include_source_url") == "true",
         )
 
     if source.startswith("notion:"):
