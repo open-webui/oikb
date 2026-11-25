@@ -296,3 +296,32 @@ def test_cli_passes_source_auth_and_can_override_basic_env(monkeypatch):
     }) as connector:
         connector.build_manifest()
     assert route.calls[0].request.headers["Authorization"] == "Bearer pat"
+
+
+@pytest.mark.parametrize(
+    ("api_version", "base_url", "endpoint", "version", "expected_url", "expected_date"),
+    [
+        (
+            "v2", "https://test.atlassian.net", "https://test.atlassian.net/wiki/api/v2/spaces/123/pages",
+            {"number": 3, "createdAt": "2026-11-20T09:15:00.000Z"},
+            "https://test.atlassian.net/wiki/pages/viewpage.action?pageId=7", "2026-11-20T09:15:00.000Z",
+        ),
+        (
+            "v1", "https://wiki.example.com/confluence", "https://wiki.example.com/confluence/rest/api/content",
+            {"number": 3, "when": "2026-11-20T09:15:00.000+01:00"},
+            "https://wiki.example.com/confluence/pages/viewpage.action?pageId=7", "2026-11-20T09:15:00.000+01:00",
+        ),
+    ],
+)
+@respx.mock
+def test_confluence_reports_page_url_and_version_date(api_version, base_url, endpoint, version, expected_url, expected_date):
+    respx.get(endpoint).mock(return_value=httpx.Response(200, json={
+        "results": [{"id": "7", "title": "VPN", "version": version}],
+    }))
+    connector = ConfluenceConnector(space_key="123", base_url=base_url, token="token", api_version=api_version)
+    try:
+        [entry] = connector.build_manifest()
+    finally:
+        connector.close()
+    assert entry.source_url == expected_url
+    assert entry.last_modified == expected_date

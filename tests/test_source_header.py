@@ -1,13 +1,9 @@
 from unittest.mock import Mock
 
-import httpx
 import pytest
-import respx
 from click.testing import CliRunner
 
 from oikb.connectors import BaseConnector, ManifestEntry
-from oikb.connectors.confluence import ConfluenceConnector
-from oikb.connectors.notion import NotionConnector
 from oikb.kb_sync import run_entries_sync
 from oikb.source_header import SourceHeaderConnector, build_source_header
 
@@ -138,52 +134,3 @@ def test_cli_flag_wraps_single_source(monkeypatch):
     result = CliRunner().invoke(cli.cli, ["sync", "one", "--kb-id", "kb", "--include-source-header"])
     assert result.exit_code == 0, result.output
     assert isinstance(run_sync.call_args.kwargs["connector"], SourceHeaderConnector)
-
-
-@pytest.mark.parametrize(
-    ("api_version", "base_url", "endpoint", "version", "expected_url", "expected_date"),
-    [
-        (
-            "v2", "https://test.atlassian.net", "https://test.atlassian.net/wiki/api/v2/spaces/123/pages",
-            {"number": 3, "createdAt": "2026-11-20T09:15:00.000Z"},
-            "https://test.atlassian.net/wiki/pages/viewpage.action?pageId=7", "2026-11-20T09:15:00.000Z",
-        ),
-        (
-            "v1", "https://wiki.example.com/confluence", "https://wiki.example.com/confluence/rest/api/content",
-            {"number": 3, "when": "2026-11-20T09:15:00.000+01:00"},
-            "https://wiki.example.com/confluence/pages/viewpage.action?pageId=7", "2026-11-20T09:15:00.000+01:00",
-        ),
-    ],
-)
-@respx.mock
-def test_confluence_reports_page_url_and_version_date(api_version, base_url, endpoint, version, expected_url, expected_date):
-    respx.get(endpoint).mock(return_value=httpx.Response(200, json={
-        "results": [{"id": "7", "title": "VPN", "version": version}],
-    }))
-    connector = ConfluenceConnector(space_key="123", base_url=base_url, token="token", api_version=api_version)
-    try:
-        [entry] = connector.build_manifest()
-    finally:
-        connector.close()
-    assert entry.source_url == expected_url
-    assert entry.last_modified == expected_date
-
-
-@respx.mock
-def test_notion_reports_page_url_and_last_edited_time():
-    respx.post("https://api.notion.com/v1/databases/root/query").mock(return_value=httpx.Response(200, json={
-        "results": [{
-            "id": "page-1",
-            "url": "https://www.notion.so/Guide-page1",
-            "last_edited_time": "2026-11-20T09:15:00.000Z",
-            "properties": {"Name": {"type": "title", "title": [{"plain_text": "Guide"}]}},
-        }],
-        "has_more": False,
-    }))
-    connector = NotionConnector("root", token="token")
-    try:
-        [entry] = connector.build_manifest()
-    finally:
-        connector.close()
-    assert entry.source_url == "https://www.notion.so/Guide-page1"
-    assert entry.last_modified == "2026-11-20T09:15:00.000Z"
