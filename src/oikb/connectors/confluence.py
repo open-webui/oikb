@@ -218,16 +218,11 @@ class ConfluenceConnector(BaseConnector):
         checksum = hashlib.sha256(f"{page_id}:v{version}".encode()).hexdigest()[:16]
         filename = self._safe_name(title) + ".txt"
         path = self._page_path(page, pages_by_id)
-        return ManifestEntry(
-            filename=filename,
-            path=path,
-            checksum=checksum,
-            size=0,
-            # Page-ID links survive title changes and page moves.
-            source_url=f"{self._web_base}/pages/viewpage.action?pageId={page_id}",
-            # v2 reports the version date as createdAt, v1 as when.
-            last_modified=version_info.get("createdAt") or version_info.get("when"),
-        )
+        # Page-ID links survive title changes and page moves.
+        source_url = f"{self._web_base}/pages/viewpage.action?pageId={page_id}"
+        # v2 reports the version date as createdAt, v1 as when.
+        last_modified = version_info.get("createdAt") or version_info.get("when")
+        return ManifestEntry(filename, path, checksum, 0, source_url, last_modified)
 
     def _page_path(
         self, page: dict[str, Any], pages_by_id: dict[str, dict[str, Any]]

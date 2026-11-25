@@ -103,14 +103,9 @@ class JiraConnector(BaseConnector):
                 ext = ".json" if self._fmt == "json" else ".md"
                 filename = f"{key}{ext}"
                 self._issue_cache[filename] = text
-                entries.append(ManifestEntry(
-                    filename=filename,
-                    path="",
-                    checksum=checksum,
-                    size=len(text.encode()),
-                    source_url=f"{self._base_url}/browse/{key}",
-                    last_modified=updated or None,
-                ))
+                source_url = f"{self._base_url}/browse/{key}"
+                size = len(text.encode())
+                entries.append(ManifestEntry(filename, "", checksum, size, source_url, updated or None))
 
             fetched += len(issues)
 
