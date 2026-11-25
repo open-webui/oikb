@@ -434,6 +434,12 @@ def _parse_auth_option(pairs: tuple[str, ...]) -> dict[str, str]:
 @click.option("--concurrency", default=1, type=int, help="Parallel upload workers (default: 1, sequential).")
 @click.option("--max-file-size", default=None, help="Skip files larger than this (e.g. 50mb, 1gb).")
 @click.option(
+    "--include-source-header",
+    is_flag=True,
+    help="Start text files with the original document URL and last-edit date, "
+    "where the source provides them. In .oikb.yaml mode, use include-source-header: true.",
+)
+@click.option(
     "--auth",
     "auth_pairs",
     multiple=True,
@@ -455,6 +461,7 @@ def sync(
     name: str | None,
     concurrency: int,
     max_file_size: str | None,
+    include_source_header: bool,
     auth_pairs: tuple[str, ...],
 ):
     """Incremental sync from a source to a Knowledge Base.
@@ -547,6 +554,9 @@ def sync(
     except (FileNotFoundError, ImportError, ValueError) as e:
         click.echo(click.style(f"Error: {e}", fg="red"), err=True)
         sys.exit(1)
+    if include_source_header:
+        from oikb.source_header import SourceHeaderConnector
+        connector = SourceHeaderConnector(connector)
 
     try:
         client = _make_client(url, token)
@@ -952,6 +962,7 @@ def validate(config_file: str | None, deep: bool):
         sys.exit(1)
 
     from oikb.config import source_status_keys
+    from oikb.source_header import include_source_header
     from oikb.webhooks import prepare_webhook_entries
     try:
         source_status_keys(entries)
@@ -981,6 +992,13 @@ def validate(config_file: str | None, deep: bool):
 
         if not source or not kb_id:
             click.echo(click.style(f"  ✗ {entry_name}: missing source or kb-id", fg="red"))
+            has_errors = True
+            continue
+
+        try:
+            include_source_header(entry)
+        except ValueError as e:
+            click.echo(click.style(f"  ✗ {entry_name}: {e}", fg="red"))
             has_errors = True
             continue
 

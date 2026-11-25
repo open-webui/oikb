@@ -117,7 +117,7 @@ class NotionConnector(BaseConnector):
                 break
         checksum = hashlib.sha256(f"{page_id}:{last_edited}".encode()).hexdigest()[:16]
         filename = re.sub(r'[<>:"/\\|?*]', "_", title) + ".txt"
-        entries.append(ManifestEntry(filename=filename, path=prefix, checksum=checksum, size=0))
+        entries.append(ManifestEntry(filename, prefix, checksum, 0, page.get("url"), last_edited or None))
         key = f"{prefix}/{filename}" if prefix else filename
         self._page_cache[key] = page_id
 

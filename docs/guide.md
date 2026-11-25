@@ -14,6 +14,7 @@ A complete guide to syncing content into Open WebUI Knowledge Bases.
   - [Generating with oikb init](#generating-with-oikb-init)
   - [Manual Setup](#manual-setup)
   - [Global Defaults](#global-defaults)
+  - [Source Links in Synced Text](#source-links-in-synced-text)
   - [Environment Variable Interpolation](#environment-variable-interpolation)
 - [Sources](#sources)
   - [Local Directories](#local-directories)
@@ -216,6 +217,40 @@ sources:
 ```
 
 Per-entry values override defaults. Nested dicts (filter, notify) are deep-merged.
+
+### Source Links in Synced Text
+
+Synced pages lose the link to where they came from, and Open WebUI citations
+open the uploaded copy rather than the original. With `include-source-header`,
+text files from connectors that know the original location start with:
+
+```text
+Source: https://company.atlassian.net/wiki/pages/viewpage.action?pageId=123456
+Last edited: 2026-11-20T09:15:00.000Z
+```
+
+Readers can follow the link from a retrieved snippet, and the model can use the
+date to judge whether a page is outdated.
+
+```yaml
+sources:
+  - name: handbook
+    source: confluence:ENG
+    kb-id: def456
+    include-source-header: true
+```
+
+For a single source on the command line, use `--include-source-header`.
+
+- Off by default. It can also be set under `defaults:`.
+- Supported by Confluence (page link by ID and version date), Notion (page URL
+  and last edit time), and Jira (issue link and last update) with Markdown output.
+- Only `.txt` and `.md` files get the header; other formats are uploaded unchanged.
+  Only `http`/`https` URLs on a single line are written.
+- The header is part of the text, so it is only visible when the first chunk of
+  a document is retrieved.
+- Turning the option on or off, or a changed link, re-uploads the affected files
+  once on the next sync.
 
 ### Environment Variable Interpolation
 

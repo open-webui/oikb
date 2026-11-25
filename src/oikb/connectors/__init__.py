@@ -16,12 +16,22 @@ class ManifestEntry:
                   Empty string for root-level files.
         checksum: Stable source checksum or version fingerprint (e.g. a Git blob ID).
         size:     File size in bytes.
+        source_url:    Optional canonical browser URL of the original document
+                       (e.g. the Confluence page). Not part of the file identity.
+        last_modified: Optional last-edit timestamp reported by the source
+                       (ISO 8601 where the source provides it).
+
+    ``source_url`` and ``last_modified`` are only written into the uploaded
+    content when a source opts in with ``include-source-header`` (see
+    ``oikb.source_header``). They are never sent to the diff endpoint.
     """
 
     filename: str
     path: str
     checksum: str
     size: int
+    source_url: str | None = None
+    last_modified: str | None = None
 
     def to_dict(self) -> dict:
         return {
