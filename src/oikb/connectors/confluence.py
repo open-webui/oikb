@@ -120,6 +120,9 @@ class ConfluenceConnector(BaseConnector):
         api_base = self._base_url
         if self._api_version == "v2" and not api_base.endswith("/wiki"):
             api_base += "/wiki"
+        # Browser links share the API base: Cloud serves both under /wiki, and
+        # Server/Data Center under the configured context path.
+        self._web_base = api_base
         self._http = httpx.Client(
             base_url=api_base,
             auth=(self._user, self._token) if self._user else None,
@@ -210,11 +213,21 @@ class ConfluenceConnector(BaseConnector):
     ) -> ManifestEntry:
         page_id = str(page["id"])
         title = page["title"]
-        version = page.get("version", {}).get("number", 0)
+        version_info = page.get("version", {})
+        version = version_info.get("number", 0)
         checksum = hashlib.sha256(f"{page_id}:v{version}".encode()).hexdigest()[:16]
         filename = self._safe_name(title) + ".txt"
         path = self._page_path(page, pages_by_id)
-        return ManifestEntry(filename=filename, path=path, checksum=checksum, size=0)
+        return ManifestEntry(
+            filename=filename,
+            path=path,
+            checksum=checksum,
+            size=0,
+            # Page-ID links survive title changes and page moves.
+            source_url=f"{self._web_base}/pages/viewpage.action?pageId={page_id}",
+            # v2 reports the version date as createdAt, v1 as when.
+            last_modified=version_info.get("createdAt") or version_info.get("when"),
+        )
 
     def _page_path(
         self, page: dict[str, Any], pages_by_id: dict[str, dict[str, Any]]

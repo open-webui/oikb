@@ -8,6 +8,7 @@ from typing import Callable
 
 from oikb.client import OikbClient
 from oikb.connectors import BaseConnector, ManifestEntry
+from oikb.source_header import SourceHeaderConnector, include_source_header
 from oikb.sync import SyncCancelled, SyncResult, build_manifest_filter, parse_size, run_sync
 
 
@@ -75,6 +76,7 @@ def run_entries_sync(
                 part in {"", ".", ".."} for part in prefix.split("/")
             )) or "\\" in prefix:
                 raise ValueError("target-path must be a relative directory path")
+            add_source_header = include_source_header(entry)
             filters = entry.get("filter", {})
             manifest_filter = build_manifest_filter(
                 include=filters.get("include"),
@@ -85,6 +87,8 @@ def run_entries_sync(
                 entry["source"], branch=entry.get("branch"), path=entry.get("path"),
                 auth=entry.get("auth", {}),
             ))
+            if add_source_header:
+                connector = SourceHeaderConnector(connector)
             source_manifest = connector.build_manifest()
             if manifest_filter:
                 source_manifest = manifest_filter(source_manifest)

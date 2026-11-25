@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Source links in synced text**: with the new `include-source-header` option (or `--include-source-header` for a single source), synced Confluence, Notion, and Jira text files start with a link to the original page and its last edit date. Readers can open the original from a cited snippet, and the model can tell how current a page is. Off by default; turning it on re-uploads the affected files once.
+
 ## [0.6.0] - 2026-10-21
 
 ### Added
