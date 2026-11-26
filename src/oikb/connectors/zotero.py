@@ -285,7 +285,10 @@ class ZoteroConnector(BaseConnector):
         name = re.sub(r"<[^>]+>", "", title)
         name = re.sub(r'[<>:"/\\|?*]', "_", name).strip() or "Untitled"
         suffix = f"_{index + 1}" if index else ""
-        return f"{name[:180]}{suffix}.txt"
+        # .md only when docling is wired up on this tenant; otherwise .txt
+        # preserves the pymupdf filename contract so existing KBs stay stable.
+        ext = "md" if (os.environ.get("DOCLING_SERVER_URL") and os.environ.get("DOCLING_PARAMS")) else "txt"
+        return f"{name[:180]}{suffix}.{ext}"
 
     def _unique_filename(self, path: str, filename: str) -> str:
         if (path, filename) not in self._files:
@@ -374,6 +377,28 @@ class ZoteroConnector(BaseConnector):
         return self._extract_pdf_text(attachment_key, pdf_bytes)
 
     def _extract_pdf_text(self, attachment_key: str, pdf_bytes: bytes) -> str:
+        docling_url = os.environ.get("DOCLING_SERVER_URL", "").rstrip("/")
+        docling_params = os.environ.get("DOCLING_PARAMS", "").strip()
+        # Both must be set: a tenant with only DOCLING_SERVER_URL (inherited
+        # from a shared config) stays on pymupdf unless they also opt in via
+        # DOCLING_PARAMS — this keeps existing KBs stable on rollout.
+        #
+        # When the gate is open, docling errors fail the whole attachment
+        # (SourceFileUnavailable) rather than silently falling back to pymupdf.
+        # The alternative mixes extraction methods under the same `.md` filename,
+        # which invalidates content hashes and causes the whole KB to churn on
+        # every transient error. Daemon callers already treat
+        # SourceFileUnavailable as a per-file warning that doesn't halt the sync.
+        if docling_url and docling_params:
+            try:
+                md = self._extract_via_docling(attachment_key, pdf_bytes, docling_url)
+            except Exception as exc:
+                raise SourceFileUnavailable(
+                    f"Docling extraction failed for attachment {attachment_key}: {exc}"
+                ) from exc
+            self._text_cache[attachment_key] = md
+            return md
+
         try:
             import fitz
         except ImportError as exc:
@@ -396,6 +421,29 @@ class ZoteroConnector(BaseConnector):
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+    def _extract_via_docling(self, attachment_key: str, pdf_bytes: bytes, docling_url: str) -> str:
+        import json as _json
+        raw_params = os.environ.get("DOCLING_PARAMS", "{}") or "{}"
+        params = _json.loads(raw_params)
+        data: dict[str, str] = {}
+        for k, v in params.items():
+            if isinstance(v, bool):
+                data[k] = "true" if v else "false"
+            elif isinstance(v, (dict, list)):
+                data[k] = _json.dumps(v)
+            else:
+                data[k] = str(v)
+        timeout = float(params.get("document_timeout", 1800))
+        files = {"files": (f"{attachment_key}.pdf", pdf_bytes, "application/pdf")}
+        r = httpx.post(
+            f"{docling_url}/v1/convert/file",
+            data=data,
+            files=files,
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        return r.json().get("document", {}).get("md_content") or ""
 
     def _webdav_file(self, attachment_key: str) -> bytes:
         auth = None
